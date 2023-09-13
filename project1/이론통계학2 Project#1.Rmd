@@ -1,0 +1,1324 @@
+---
+title: "이론통계학2 project#1"
+author: "서민지"
+date: "2023-09-09"
+output:
+  html_document: default
+  word_document: default
+---
+
+# Part A. DRAM 분기별 선적자료
+## 1. 256K-DRAM 분기별 선적자료($S_{t}$)에 대한 시계열도표를 그려보시오.
+```{r include=FALSE}
+library(ggplot2)
+library(tidyverse)
+library(rootSolve); library(optimx) ; library(gridExtra)
+library(lubridate)
+```
+
+```{r}
+setwd("C:/Temp")
+# 데이터 불러오기
+library(readxl)
+dram<-read_excel("DRAM-AIDS-자료.xls", range = "B1:F52")
+names(dram)<-c("year", "Quarter", "t", "s256", "s1")
+head(dram)
+
+ggplot(data = dram, aes(x = t, y = s256)) +
+  geom_line(color="blue", linewidth=1) +
+  ggtitle("분기별 256KD 선적량") + theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+```
+
+
+## 2. 256K-DRAM 분기별 선적자료 이용해 DRAM의 총수요($m$) 추정
+### Bass, Logistic, Gumbel 모형으로 $n=15,30,51$ 개의 자료를 학습자료로 이용
+### 각 모형에 포함된 모수 ($p,q,m$) OLS로 추정. 상대오차값 구하기
+```{r}
+sum(dram$s256) #4652937
+```
+실제총수요($m$)을 $n=51$일 때의 누적판매량보다 약간 크게 잡아 4700000로 설정
+
+### 세가지 모형에 대한 함수 짜기
+```{r}
+options(scipen=999)
+
+# Bass
+bass<-function(data,n){
+  data<-as.matrix(data)
+  St_n<-data[1:n]
+  yt_n<-c(0,cumsum(St_n)[1:(n-1)])
+  
+  lm<-lm(St_n ~ yt_n + I((yt_n)^2))
+  
+  a <- lm$coef[1]
+  b <- lm$coef[2]
+  c <- lm$coef[3]
+  
+  m<- (-b-sqrt(b^2-4*a*c))/(2*c)
+  p<- a/m
+  q<- b+p
+  
+  # 상대오차값
+  mse.bass <- 100 * (m - 4700000) / 4700000  #실제총수요 4700000로 설정
+  list(bass.mpq=c(m,p,q),mse.bass=mse.bass)
+}
+
+bass15 <- bass(dram$s256,15)
+bass30 <- bass(dram$s256,30)
+bass51 <- bass(dram$s256,51)
+
+#Logistic
+logistic<-function(data,n){
+  data<-as.matrix(data)
+  St_n<-data[1:n]
+  yt_n<-c(0,cumsum(St_n)[1:(n-1)])
+  
+  lm<-lm(St_n ~ 0 + yt_n + I((yt_n)^2))
+  
+  # (m,p,q)
+  p <- 0
+  q <- lm$coef[1]
+  m <- -lm$coef[1]/lm$coef[2]
+  mu <- dram$t[which.max(lm$fitted.values)]
+  
+  logit.mq <- c(m,p,q)
+  mse.logit <- 100 * (logit.mq[1] - 4700000) / 4700000
+  list(logit.mq=logit.mq,logit.mu = mu, mse.logit=mse.logit)
+}
+
+logi15 <- logistic(dram$s256,15)
+logi30 <- logistic(dram$s256,30)
+logi51 <- logistic(dram$s256,51)
+
+#Gumbel
+gumbel<-function(data,n){
+  data<-as.matrix(data)
+  St_n<-data[1:n]
+  yt_n<-c(0,cumsum(St_n)[1:(n-1)])
+  
+  lm<-lm(St_n ~ 0 + yt_n + I((yt_n) * log(yt_n)))
+  
+  # (m,p,q)
+  p <- 0
+  q <- -lm$coef[2]
+  m <- exp(lm$coef[1] / q)
+  mu <- dram$t[which.max(lm$fitted.values)]
+  
+  gum.mq <- c(m,p,q)
+  mse.gum <- 100 * (gum.mq[1] - 4700000) / 4700000
+  list(gum.mq=gum.mq, gum.mu = mu, mse.gum=mse.gum)
+}
+
+gum15 <- gumbel(dram$s256,15)
+gum30 <- gumbel(dram$s256,30)
+gum51 <- gumbel(dram$s256,51)
+```
+
+### 추정된 $m,p,q$와 상대오차
+```{r}
+#모수 추정
+#Bass
+bass.dram<-rbind(unlist(bass15)[1:3],unlist(bass30)[1:3],unlist(bass51)[1:3])
+colnames(bass.dram)<-c("m","p","q")
+rownames(bass.dram)<-c("n=15","n=30","n=51")
+bass.dram
+
+#Logistic
+logi.dram<-rbind(unlist(logi15)[1:3],unlist(logi30)[1:3],unlist(logi51)[1:3])
+colnames(logi.dram)<-c("m","p","q")
+rownames(logi.dram)<-c("n=15","n=30","n=51")
+logi.dram
+
+#Gumbel
+gum.dram<-rbind(unlist(gum15)[1:3],unlist(gum30)[1:3],unlist(gum51)[1:3])
+colnames(gum.dram)<-c("m","p","q")
+rownames(gum.dram)<-c("n=15","n=30","n=51")
+gum.dram
+
+#total table
+list("bass" = bass.dram, "logistic"=logi.dram, "gumbel" = gum.dram)
+
+#상대오차
+rel.error<-data.frame("bass" = c(bass15$mse.bass, bass30$mse.bass, bass51$mse.bass),
+                      "logistic" = c(logi15$mse.logit, logi30$mse.logit, logi51$mse.logit),
+                      "gumbel" = c(gum15$mse.gum, gum30$mse.gum, gum51$mse.gum))
+rownames(rel.error)<-c("n=15","n=30","n=51")
+rel.error
+```
+n이 커질수록 상대오차 절대값이 작아지고 Bass모형, Logistic모형, Gumbel모형 중 Gumbel모형의 상대오차 절대값이 가장 작다.
+
+## $n=15, 30, 51$ 각 경우 MSE, Q-Q plot 등을 이용하여 최적 예측모형을 선택하시오. 또한 선택된 모형을 이용한 총수요 추정치를 실제총수요($m$)와 비교한 상대오차를 구하여 가장 정확한 추정 방법은 무엇인지 설명하시오.
+```{r}
+#MSE 방법
+#Bass
+mse_bass <- function(data, n){
+  t <- c(1:n)
+  data<-as.matrix(data)
+  St_n<-data[1:n]
+  yt_n<-c(0,cumsum(St_n)[1:(n-1)])
+
+   f <- function(par){
+      m <- par[1];   p <- par[2];   q <- par[3]
+      y <- m*(1-exp(-(p+q)*t)) / (1+(q/p)*exp(-(p+q)*t))
+      MSE <- sum((y-yt_n)^2)/n
+      return(MSE)
+   }
+
+   optim1 <- optim(par=unlist(bass(dram$s256,n))[1:3], f, hessian=T)
+   m <- optim1$par[1]	
+   p <- optim1$par[2]
+   q <- optim1$par[3]
+   error <- 100*(m-4700000)/4700000
+   mse <- optim1$value
+
+   cbind(m=m, p=p, q=q, error=error, mse=mse)
+}
+
+mse_bass15<-mse_bass(dram$s256,15)
+mse_bass30<-mse_bass(dram$s256,30)
+mse_bass51<-mse_bass(dram$s256,51)
+
+#Logistic
+mse_logi <- function(data, n){
+  t <- c(1:n)
+  data<-as.matrix(data)
+  St_n<-data[1:n]
+  yt_n<-c(0,cumsum(St_n)[1:(n-1)])
+
+   f <- function(par){
+      m <- par[1];  q <- par[2];   mu <- logistic(dram$s256,n)$logit.mu
+      y <- m/(1+exp(-q*(t-mu)))
+      MSE <- sum((y-yt_n)^2)/n
+   }
+
+   optim1 <- optim(par=unlist(logistic(dram$s256,n))[c(1,3)], f, hessian=T)
+   m <- optim1$par[1]	
+   q <- optim1$par[2]
+   error <- 100*(m-4700000)/4700000
+   mse <- optim1$value
+
+   cbind(m=m, p=0, q=q, error=error, mse=mse)
+}
+
+mse_logi15<-mse_logi(dram$s256,15)
+mse_logi30<-mse_logi(dram$s256,30)
+mse_logi51<-mse_logi(dram$s256,51)
+
+#Gumbel
+mse_gum <- function(data, n){
+   t <- c(1:n)
+   data<-as.matrix(data)
+   St_n<-data[1:n]
+   yt_n<-c(0,cumsum(St_n)[1:(n-1)])
+
+   f <- function(par){
+      m <- par[1];   q <- par[2];   mu <- gumbel(dram$s256,n)$gum.mu
+      y <- m*exp(-exp(-q*(t-mu)))
+      MSE <- sum((y-yt_n)^2)/n
+   }
+
+   optim1 <- optim(par=unlist(gumbel(dram$s256,n))[c(1,3)], f, hessian=T)
+   m <- optim1$par[1]	
+   q <- optim1$par[2]
+   error <- 100*(m-4700000)/4700000
+   mse <- optim1$value
+
+   cbind(m=m, p=0, q=q, error=error, mse=mse)
+}
+
+mse_gum15<-mse_gum(dram$s256,15)
+mse_gum30<-mse_gum(dram$s256,30)
+mse_gum51<-mse_gum(dram$s256,51)
+
+#MSE를 이용한 상대오차 table
+rel.error.mse<-data.frame("bass" = c(mse_bass15[4], mse_bass30[4], mse_bass51[4]),
+                      "logistic" = c(mse_logi15[4], mse_logi30[4], mse_logi51[4]),
+                      "gumbel" = c(mse_gum15[4], mse_gum30[4], mse_gum51[4]))
+rownames(rel.error.mse)<-c("n=15","n=30","n=51")
+rel.error.mse
+```
+gumbel 모형이 n에 상관없이 가장 작은 mse를 가짐으로 가장 예측력이 좋다고 할 수 있다.
+
+## R-sqaured를 최대로 하는 m 구하기
+```{r warning=FALSE}
+#Bass
+qq_bass<-function(s,y,Xr){
+  mylm<-lm(s~y+I(y^2))
+  a<-mylm$coef[1]
+  b<-mylm$coef[2]
+  c<-mylm$coef[3]
+  m.ini<-(-b-sqrt(b^2-4*a*c))/(2*c)
+  myM<-seq(m.ini-100000, m.ini+100000, by = 1000)
+  myR2<-c(); Ur<-c(); k<-c(); c<-c()
+  for(i in 1:201){
+    Ur<-y/(myM[i]+1);k<-2*a/myM[i]+b;c<-(b-a/myM[i])/myM[i]
+    suppressWarnings({quan<-(log((1-c*Ur)/(1-Ur)))/k})
+    R2<-summary(lm(Xr~quan+0))$r.squared
+    myR2[i]<-R2
+  }
+  cand<-data.frame(myM,myR2)
+  m<-cand$myM[which.max(myR2)]
+  par<-list(m=m, k=k, c=c, R2=max(myR2))
+  return(par)
+}
+
+qq_logis<-function(s,y,Xr){
+  mylm<-lm(s~y+I(y^2)+0)
+  m.ini<-(-mylm$coef[1])/mylm$coef[2]
+  myM<-seq(m.ini-100000, m.ini+100000, by = 1000)
+  myR2<-c(); Ur<-c()
+  for(i in 1:201){
+    Ur<-y/(myM[i]+1)
+    suppressWarnings({quan<-log(Ur/(1-Ur))})
+    R2<-summary(lm(Xr~quan))$r.squared
+    myR2[i]<-R2
+  }
+  cand<-data.frame(myM,myR2)
+  m<-cand$myM[which.max(myR2)]
+  U<-y/(m+1)
+  suppressWarnings({mylm2<-lm(Xr~log(U/(1-U)))})
+  par<-list(m=m, mu=mylm2$coef[1], sig=mylm2$coef[2], R2=max(myR2))
+  return(par)
+}
+
+qq_gumb<-function(s,y,Xr){
+  mylm<-lm(s~y+I(y*log(y))+0)
+  m.ini<-exp(-mylm$coef[1]/mylm$coef[2])
+  myM<-seq(m.ini-100000, m.ini+100000, by = 1000)
+  myR2<-c(); Ur<-c()
+  for(i in 1:201){
+    Ur<-y/(myM[i]+1)
+    suppressWarnings({quan<-(-log(-log(Ur)))})
+    R2<-summary(lm(Xr~quan))$r.squared
+    myR2[i]<-R2
+  }
+  cand<-data.frame(myM,myR2)
+  m<-cand$myM[which.max(myR2)]
+  y<-y[y<m]
+  U<-y/(m+1)
+  Quan<-(-log(-log(U)))
+  suppressWarnings({mylm2<-lm(1:length(U)~Quan)})
+  par<-list(m=m, mu=mylm2$coef[1], sig=mylm2$coef[2], R2=max(myR2))
+  return(par)
+}
+
+dram$yt <- c(0, c(cumsum(dram$s256)[1:nrow(dram)-1]))
+dram_1 <- dram[2:nrow(dram),]
+
+qqbass256_15<-with(dram[1:15,], qq_bass(s256, yt, t))
+qqbass256_30<-with(dram[1:30,], qq_bass(s256, yt, t))
+qqbass256_51<-with(dram[1:51,], qq_bass(s256, yt, t))
+qqlogis256_15<-with(dram[2:15,], qq_logis(s256, yt, t))
+qqlogis256_30<-with(dram[2:30,], qq_logis(s256, yt, t))
+qqlogis256_51<-with(dram[2:51,], qq_logis(dram_1$s256, dram_1$yt, dram_1$t))
+qqgumb256_15<-with(dram[2:15,], qq_gumb(s256, yt, t))
+qqgumb256_30<-with(dram[2:30,], qq_gumb(s256, yt, t))
+qqgumb256_51<-with(dram[2:51,], qq_gumb(dram_1$s256, dram_1$yt, dram_1$t))
+
+#rel.error table
+rel.error.qq <- data.frame("n" = c(15,30,51), "bass" = c(100*(qqbass256_15$m-4700000)/4700000, 100*(qqbass256_30$m-4700000)/4700000, 100*(qqbass256_51$m-4700000)/4700000), "logistic" = c(100*(qqlogis256_15$m-4700000)/4700000, 100*(qqlogis256_30$m-4700000)/4700000, 100*(qqlogis256_51$m-4700000)/4700000), "gumbel" = c(100*(qqgumb256_15$m-4700000)/4700000, 100*(qqgumb256_30$m-4700000)/4700000, 100*(qqgumb256_51$m-4700000)/4700000))
+rel.error.qq
+
+rsquared <- data.frame("n" = c(15,30,51), "bass" = c(qqbass256_15$R2, qqbass256_30$R2, qqbass256_51$R2), "logistic" = c(qqlogis256_15$R2, qqlogis256_30$R2, qqlogis256_51$R2), "gumbel" = c(qqgumb256_15$R2, qqgumb256_30$R2, qqgumb256_51$R2))
+rsquared
+```
+
+```{r warning=FALSE}
+#Q-Q plot
+quan_bass<-function(pr){
+  c<-qqbass256$c
+  k<-qqbass256$k  #k=p+q, c=q/p
+  return(log((1+c*pr)/(1-pr))/k)
+}
+
+quan_logi<-function(pr){
+  mu<-qqlogis256$mu
+  sigma<-qqlogis256$sig #sigma=1/q
+  return(mu+sigma*log(pr/(1-pr)))
+}
+
+quan_gum<-function(pr){
+  mu<-qqgumb256$mu;
+  sigma<-qqgumb256$sig #sigma=1/q
+  return(mu+sigma*(-log(-log(pr))))
+}
+
+#n=15
+dram_add_15<-dram[1:15,] %>% select(t, s256) %>%
+  mutate(pr1=cumsum(s256)/(qqbass256_15$m+1),
+         pr2=cumsum(s256)/(qqlogis256_15$m+1),
+         pr3=cumsum(s256)/(qqgumb256_15$m+1),
+         bass=quan_bass(pr1),
+         logi=quan_logi(pr2),
+         gum=quan_gum(pr3))
+
+#Bass
+qqbassplot15<-ggplot(dram_add_15, aes(bass, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="Bass n=15 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~bass, dram_add_15))$r.squared, 4)*100,"%"))
+
+#logistic
+qqlogiplot15<-ggplot(dram_add_15, aes(logi, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="logistic n=15 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~logi, dram_add_15))$r.squared, 4)*100,"%"))
+
+#gumbel
+qqgumplot15<-ggplot(dram_add_15, aes(gum, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="gumbel n=15 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~gum, dram_add_15))$r.squared, 4)*100,"%"))
+
+
+#n=30
+dram_add_30<-dram[1:30,] %>% select(t, s256) %>%
+  mutate(pr1=cumsum(s256)/(qqbass256_30$m+1),
+         pr2=cumsum(s256)/(qqlogis256_30$m+1),
+         pr3=cumsum(s256)/(qqgumb256_30$m+1),
+         bass=quan_bass(pr1),
+         logi=quan_logi(pr2),
+         gum=quan_gum(pr3))
+
+#Bass
+qqbassplot30<-ggplot(dram_add_30, aes(bass, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="Bass n=30 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~bass, dram_add_30))$r.squared, 4)*100,"%"))
+
+#logistic
+qqlogiplot30<-ggplot(dram_add_30, aes(logi, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="logistic n=30 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~logi, dram_add_30))$r.squared, 4)*100,"%"))
+
+#gumbel
+qqgumplot30<-ggplot(dram_add_30, aes(gum, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="gumbel n=30 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~gum, dram_add_30))$r.squared, 4)*100,"%"))
+
+
+#n=51
+dram_add_51<-dram[1:51,] %>% select(t, s256) %>%
+  mutate(pr1=cumsum(s256)/(qqbass256_51$m+1),
+         pr2=cumsum(s256)/(qqlogis256_51$m+1),
+         pr3=cumsum(s256)/(qqgumb256_51$m+1),
+         bass=quan_bass(pr1),
+         logi=quan_logi(pr2),
+         gum=quan_gum(pr3))
+
+#Bass
+qqbassplot51<-ggplot(dram_add_51, aes(bass, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="Bass n=51 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~bass, dram_add_51))$r.squared, 4)*100,"%"))
+
+#logistic
+qqlogiplot51<-ggplot(dram_add_51, aes(logi, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="logistic n=51 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~logi, dram_add_51))$r.squared, 4)*100,"%"))
+
+#gumbel
+qqgumplot51<-ggplot(dram_add_51, aes(gum, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="gumbel n=51 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~gum, dram_add_51))$r.squared, 4)*100,"%"))
+
+library(GGally)
+grid.arrange(qqbassplot15, qqlogiplot15, qqgumplot15, qqbassplot30, qqlogiplot30, qqgumplot30, qqbassplot51, qqlogiplot51, qqgumplot51, ncol=3)
+```
+gumbel 모형이 n에 상관없이 가장 좋은 예측력을 가진다는 것을 알 수 있다.
+
+
+## 4. 1M-DRAM 전체자료 (n=40)에 대해 위 세 가지 방법으로 예측한 m 값을 상호 비교해 보시오. 또 각 모형에 대한 Q-Q plot을 그리고 이들 중 가장 적절한 모형은 무엇인지 검토하시오.
+### 세가지 모형에 대한 함수 짜기
+```{r}
+dram$y1<-c(); dram$y1[1]<-0; n<-length(dram$s1)
+
+for(t in 2:n){dram$y1[t]<-sum(dram$s1[1:(t-1)])}
+# data범위 설정
+dram4<-dram[12:51,]
+dram4$t<-1:40 # t도 다시 세팅
+
+sum(dram4$s1) #4287959
+
+# Bass
+bass<-function(data,n){
+  data<-as.matrix(data)
+  St_n<-data[1:n]
+  yt_n<-c(0,cumsum(St_n)[1:(n-1)])
+  
+  lm<-lm(St_n ~ yt_n + I((yt_n)^2))
+  
+  a <- lm$coef[1]
+  b <- lm$coef[2]
+  c <- lm$coef[3]
+  
+  # x = (m,p,q)
+  model <- function(x) {c(x[1] * x[2] - a, x[3] - x[2] - b,- x[3] / x[1] - c)}
+  ss <- multiroot(f = model, start = c(sum(data[1:n]),0.1,0.1))
+  # 추정값(m, p, q)
+  bass.mpq <- ss$root
+  # 상대오차값
+  mse.bass <- 100 * (bass.mpq[1] - 4500000) / 4500000  #실제총수요 4500000로 설정
+  list(bass.mpq=bass.mpq,mse.bass=mse.bass)
+}
+
+bass40 <- bass(dram4$s1,40)
+
+#Logistic
+logistic<-function(data,n){
+  data<-as.matrix(data)
+  St_n<-data[1:n]
+  yt_n<-c(0,cumsum(St_n)[1:(n-1)])
+  
+  lm<-lm(St_n ~ 0 + yt_n + I((yt_n)^2))
+  
+  # (m,p,q)
+  p <- 0
+  q <- lm$coef[1]
+  m <- -lm$coef[1]/lm$coef[2]
+  mu <- dram4$t[which.max(lm$fitted.values)]
+  
+  logit.mq <- c(m,p,q)
+  mse.logit <- 100 * (logit.mq[1] - 4500000) / 4500000
+  list(logit.mq=logit.mq,logit.mu = mu, mse.logit=mse.logit)
+}
+
+logi40 <- logistic(dram4$s1,40)
+
+#Gumbel
+gumbel<-function(data,n){
+  data<-as.matrix(data)
+  St_n<-data[1:n]
+  yt_n<-c(0,cumsum(St_n)[1:(n-1)])
+  
+  lm<-lm(St_n ~ 0 + yt_n + I((yt_n) * log(yt_n)))
+  
+  # (m,p,q)
+  p <- 0
+  q <- -lm$coef[2]
+  m <- exp(lm$coef[1] / q)
+  mu <- dram4$t[which.max(lm$fitted.values)]
+  
+  gum.mq <- c(m,p,q)
+  mse.gum <- 100 * (gum.mq[1] - 4500000) / 4500000
+  list(gum.mq=gum.mq, gum.mu = mu, mse.gum=mse.gum)
+}
+
+gum40 <- gumbel(dram4$s1,40)
+```
+
+### 추정된 $m,p,q$와 상대오차
+```{r}
+#모수 추정
+all.dram.1m<-rbind(unlist(bass40)[1:3], unlist(logi40)[1:3], unlist(gum40)[1:3])
+colnames(all.dram.1m)<-c("m","p","q")
+rownames(all.dram.1m)<-c("bass","logistic","gumbel")
+all.dram.1m
+
+#상대오차
+rel.error.1m<-data.frame("bass" = bass40$mse.bass,
+                      "logistic" = logi40$mse.logit,
+                      "gumbel" = gum40$mse.gum)
+rownames(rel.error.1m)<-"상대오차"
+rel.error.1m
+```
+OLS로 추정한 m의 상대오차가 logistic 모형에서 가장 작기 때문에 logistic 모형이 가장 예측력이 좋다고 할 수 있다.
+
+## MSE
+```{r}
+#MSE 방법
+#Bass
+mse_bass <- function(data, n){
+  t <- c(1:n)
+  data<-as.matrix(data)
+  St_n<-data[1:n]
+  yt_n<-c(0,cumsum(St_n)[1:(n-1)])
+
+   f <- function(par){
+      m <- par[1];   p <- par[2];   q <- par[3]
+      y <- m*(1-exp(-(p+q)*t)) / (1+(q/p)*exp(-(p+q)*t))
+      MSE <- sum((y-yt_n)^2)
+   }
+
+   optim1 <- optim(par=unlist(bass(dram4$s1,n))[1:3], f, hessian=T)
+   m <- optim1$par[1]	
+   p <- optim1$par[2]
+   q <- optim1$par[3]
+   error <- 100*(m-4500000)/4500000
+
+   cbind(m=m, p=p, q=q, error=error)
+}
+
+mse_bass40<-mse_bass(dram4$s1,40)
+
+#Logistic
+mse_logi <- function(data, n){
+  t <- c(1:n)
+  data<-as.matrix(data)
+  St_n<-data[1:n]
+  yt_n<-c(0,cumsum(St_n)[1:(n-1)])
+
+   f <- function(par){
+      m <- par[1];  q <- par[2];   mu <- logistic(dram4$s1,n)$logit.mu
+      y <- m/(1+exp(-q*(t-mu)))
+      MSE <- sum((y-yt_n)^2)
+   }
+
+   optim1 <- optim(par=unlist(logistic(dram4$s1,n))[c(1,3)], f, hessian=T)
+   m <- optim1$par[1]	
+   q <- optim1$par[2]
+   error <- 100*(m-4500000)/4500000
+
+   cbind(m=m, p=0, q=q, error=error)
+}
+
+mse_logi40<-mse_logi(dram4$s1,40)
+
+#Gumbel
+mse_gum <- function(data, n){
+   t <- c(1:n)
+   data<-as.matrix(data)
+   St_n<-data[1:n]
+   yt_n<-c(0,cumsum(St_n)[1:(n-1)])
+
+   f <- function(par){
+      m <- par[1];   q <- par[2];   mu <- gumbel(dram4$s1,n)$gum.mu
+      y <- m*exp(-exp(-q*(t-mu)))
+      MSE <- sum((y-yt_n)^2)
+   }
+
+   optim1 <- optim(par=unlist(gumbel(dram4$s1,n))[c(1,3)], f, hessian=T)
+   m <- optim1$par[1]	
+   q <- optim1$par[2]
+   error <- 100*(m-4500000)/4500000
+
+   cbind(m=m, p=0, q=q, error=error)
+}
+
+mse_gum40<-mse_gum(dram4$s1,40)
+
+#MSE를 이용한 상대오차 table
+rel.error.mse.1m<-data.frame("bass" = mse_bass40[4], "logistic" = mse_logi40[4],
+                      "gumbel" = mse_gum40[4])
+rownames(rel.error.mse.1m)<-c("MSE 상대오차")
+rel.error.mse.1m
+```
+## R-sqaured를 최대로 하는 m 구하기
+```{r warning=FALSE}
+#Bass
+qq_bass<-function(s,y,Xr){
+  mylm<-lm(s~y+I(y^2))
+  a<-mylm$coef[1]
+  b<-mylm$coef[2]
+  c<-mylm$coef[3]
+  m.ini<-(-b-sqrt(b^2-4*a*c))/(2*c)
+  myM<-seq(m.ini-100000, m.ini+100000, by = 1000)
+  myR2<-c(); Ur<-c(); k<-c(); c<-c()
+  for(i in 1:201){
+    Ur<-y/(myM[i]+1);k<-2*a/myM[i]+b;c<-(b-a/myM[i])/myM[i]
+    suppressWarnings({quan<-(log((1-c*Ur)/(1-Ur)))/k})
+    R2<-summary(lm(Xr~quan+0))$r.squared
+    myR2[i]<-R2
+  }
+  cand<-data.frame(myM,myR2)
+  m<-cand$myM[which.max(myR2)]
+  par<-list(m=m, k=k, c=c, R2=max(myR2))
+  return(par)
+}
+
+qq_logis<-function(s,y,Xr){
+  mylm<-lm(s~y+I(y^2)+0)
+  m.ini<-(-mylm$coef[1])/mylm$coef[2]
+  myM<-seq(m.ini-100000, m.ini+100000, by = 1000)
+  myR2<-c(); Ur<-c()
+  for(i in 1:201){
+    Ur<-y/(myM[i]+1)
+    suppressWarnings({quan<-log(Ur/(1-Ur))})
+    R2<-summary(lm(Xr~quan))$r.squared
+    myR2[i]<-R2
+  }
+  cand<-data.frame(myM,myR2)
+  m<-cand$myM[which.max(myR2)]
+  U<-y/(m+1)
+  suppressWarnings({mylm2<-lm(Xr~log(U/(1-U)))})
+  par<-list(m=m, mu=mylm2$coef[1], sig=mylm2$coef[2], R2=max(myR2))
+  return(par)
+}
+
+qq_gumb<-function(s,y,Xr){
+  mylm<-lm(s~y+I(y*log(y))+0)
+  m.ini<-exp(-mylm$coef[1]/mylm$coef[2])
+  myM<-seq(m.ini-100000, m.ini+100000, by = 1000)
+  myR2<-c(); Ur<-c()
+  for(i in 1:201){
+    Ur<-y/(myM[i]+1)
+    suppressWarnings({quan<-(-log(-log(Ur)))})
+    R2<-summary(lm(Xr~quan))$r.squared
+    myR2[i]<-R2
+  }
+  cand<-data.frame(myM,myR2)
+  m<-cand$myM[which.max(myR2)]
+  y<-y[y<m]
+  U<-y/(m+1)
+  Quan<-(-log(-log(U)))
+  suppressWarnings({mylm2<-lm(1:length(U)~Quan)})
+  par<-list(m=m, mu=mylm2$coef[1], sig=mylm2$coef[2], R2=max(myR2))
+  return(par)
+}
+
+dram4_1 <- dram4[2:nrow(dram4),]
+
+qqbass1m<-qq_bass(dram4_1$s1, dram4_1$y1, dram4_1$t)
+qqlogis1m<-qq_logis(dram4_1$s1, dram4_1$y1, dram4_1$t)
+qqgumb1m<-qq_gumb(dram4_1$s1, dram4_1$y1, dram4_1$t)
+
+#rel.error table
+rel.error.qq <- data.frame("bass" = 100*(qqbass1m$m-4500000)/4500000, "logistic" = 100*(qqlogis1m$m-4500000)/4500000, "gumbel" = 100*(qqgumb1m$m-4500000)/4500000)
+rel.error.qq
+```
+R-squared를 최대화하는 m을 추정하여 구한 상대오차는 logistic model에서 가장 작으므로 logistic model의 예측력이 가장 좋다고 할 수 있다.
+
+# 3가지 방법으로 예측한 m/상대오차 상호비교
+```{r}
+mse_m<-data.frame('bass'=mse_bass40[1,1], 'logistic'=mse_logi40[1,1], 'gumbel'=mse_gum40[1,1]) #mse
+qq_m<-data.frame('bass'=qqbass1m$m, 'logistic'=qqlogis1m$m, 'gumbel'=qqgumb1m$m) ##q-q plot
+
+compare_m<-t(as.matrix(rbind(all.dram.1m[,1], mse_m, qq_m)))
+colnames(compare_m)<-c('OLS',"MSE","R-squared")
+compare_m
+
+compare_error<-t(as.matrix(rbind(rel.error.1m, rel.error.mse.1m, rel.error.qq)))
+colnames(compare_error)<-c('OLS',"MSE","R-squared")
+compare_error
+```
+OLS, MSE, Q-Q plot 방법에서 모두 logistic이 추정된 m이 가장 실제총수요에 가깝고 그에 따라 상대오차도 가장 작은 것을 확인할 수 있다.
+
+
+```{r warning=FALSE}
+#Q-Q plot
+quan_bass40<-function(pr){
+  c<-qqbass1m$c
+  k<-qqbass1m$k  #k=p+q, c=q/p
+  return(log((1+c*pr)/(1-pr))/k)
+}
+
+quan_logi40<-function(pr){
+  mu<-qqlogis1m$mu
+  sigma<-qqlogis1m$sig #sigma=1/q
+  return(mu+sigma*log(pr/(1-pr)))
+}
+
+quan_gum40<-function(pr){
+  mu<-qqgumb1m$mu;
+  sigma<-qqgumb1m$sig #sigma=1/q
+  return(mu+sigma*(-log(-log(pr))))
+}
+
+dram40<-dram4 %>% select(t, s1) %>%
+  mutate(pr1=cumsum(s1)/(qqbass1m$m+1),
+         pr2=cumsum(s1)/(qqlogis1m$m+1),
+         pr3=cumsum(s1)/(qqgumb1m$m+1),
+         bass=quan_bass40(pr1),
+         logi=quan_logi40(pr2),
+         gum=quan_gum40(pr3))
+
+#Bass
+qqbass40<-ggplot(dram40, aes(bass, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="Bass n=40 Q-Q plot", subtitle=paste0("R.squared = ", round(qqbass1m$R2, 4)*100,"%"))
+
+#logistic
+qqlogi40<-ggplot(dram40, aes(logi, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="logistic n=40 Q-Q plot", subtitle=paste0("R.squared = ", round(qqlogis1m$R2, 4)*100,"%"))
+
+#gumbel
+qqgum40<-ggplot(dram40, aes(gum, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="gumbel n=40 Q-Q plot", subtitle=paste0("R.squared = ", round(qqgumb1m$R2, 4)*100,"%"))
+
+library(GGally)
+grid.arrange(qqbass40, qqlogi40, qqgum40, ncol=3)
+```
+1M data에서도 gumbel 모형이 가장 적절하다.
+
+#Part C. 영화흥행예측
+## 1. 탑건: 매버릭
+```{r include=FALSE}
+library(ggplot2)
+library(tidyverse)
+library(rootSolve); library(optimx) ; library(gridExtra)
+```
+
+```{r}
+library(readxl)
+maverick<-read_excel("탑건매버릭.xlsx", skip=3, col_names=TRUE)
+head(maverick)
+maverick_use<-maverick[,c("날짜","관객수", "누적관객수")]
+maverick_use$t <- seq(1,nrow(maverick_use))
+maverick_use <- maverick_use[,c("날짜","t","관객수","누적관객수")]
+colnames(maverick_use)<-c("date", "t", "St", "Yt")
+maverick_use$weekday <- weekdays(maverick_use$date)
+maverick_use$wday <- factor(maverick_use$weekday %in% c('토요일','일요일'),labels=c('평일','주말'))
+maverick_use$date<-as.Date(maverick_use$date)
+maverick_use
+
+#공휴일 (2018~2024 자료)
+holiday<-read_excel("국가공휴일_2024년 까지_v2.xlsx")
+holiday$date<-paste(holiday$년, holiday$월, holiday$일, sep = "-")
+holiday$date<-as.Date(holiday$date)
+holiday_use<-holiday[,c("date","설명")]
+holiday_use
+
+maverick_use$holiday<-maverick_use$date %in% holiday$date #holiday면 TRUE 입력
+maverick_use$holiday[maverick_use$wday == '주말'] <- TRUE
+maverick_use
+
+#주말/공휴일 효과 보정 X
+library(ggplot2)
+ggplot(maverick_use, aes(t, St))+geom_line(color="blue") + geom_point(color="blue")+
+  ggtitle("Top Gun: Maverick S(t) plot")+ labs(subtitle='보정 전 관객수')
+
+ggplot(maverick_use, aes(t, Yt))+geom_line(color="red") +
+  ggtitle("Top Gun: Maverick Y(t) plot")+ labs(subtitle='보정 전 누적관객수')
+```
+
+## 주말/공휴일 효과 보정
+```{r}
+library(dplyr)
+mean(maverick_use$St[maverick_use$holiday == TRUE]) #주말/공휴일 평균관객수 #59737.01
+mean(maverick_use$St[maverick_use$holiday != TRUE]) #평일/비공휴일 평균관객수 #27484.01
+mean(maverick_use$St[maverick_use$holiday == TRUE]) / mean(maverick_use$St[maverick_use$holiday != TRUE]) #2.17으로 2배 가량 차이가 나지만 주말/공휴일 관객수에 1/2를 보정한다
+
+maverick_use <- maverick_use %>% mutate(repnum = ifelse(holiday==TRUE,2,1))
+maverick_use <- as.data.frame(lapply(maverick_use, rep, maverick_use$repnum))
+maverick_use$St2 <- ifelse(maverick_use$holiday == TRUE, maverick_use$St/2, maverick_use$St)
+maverick_use<-maverick_use %>% select(c(date, St2))
+maverick_use<-maverick_use[,c("date","St2")]
+
+
+#ggplot(maverick_use)+geom_line(aes(t, St, color='blue'))+geom_line(aes(t,St2, color='orange'))+scale_color_discrete(labels=c("보정전 관객수", "보정후 관객수"))
+
+maverick_use$Yt2 <- c(0, cumsum(maverick_use$St2)[1:nrow(maverick_use)-1])
+maverick_use
+
+#주말/공휴일 효과 보정 O
+library(ggplot2)
+ggplot(maverick_use, aes(t, St2))+geom_line(color="blue") + geom_point(color="blue")+
+  ggtitle("Top Gun: Maverick S(t)2 plot") + labs(subtitle='보정 후 관객수')
+
+ggplot(maverick_use, aes(t, Yt2))+geom_line(color="red") +
+  ggtitle("Top Gun: Maverick Y(t)2 plot") + labs(subtitle='보정 후 누적관객수')
+```
+
+```{r}
+options(scipen=999)
+maverick_use$date <- as.Date(maverick_use$date)
+maverick_use <- maverick_use[maverick_use$date >= '2022-06-22', ] #개봉 전 일수 자르기
+maverick_use$t <- seq(1,nrow(maverick_use))
+maverick_use <- maverick_use[,c("date","t","St2","Yt2")]
+
+m.real<-max(maverick_use$Yt2) #8198499
+#개봉 이후 시간이 많이 지나 박스오피스에서 더 이상 상영하지 않으므로 상대오차를 계산하기 위한 실제 총 관객수 m을 현재까지의 총 누적 관객수로 가정해도 무리가 없다고 판단해 가장 마지막 값으로 m 설정
+
+# Bass
+bass<-function(data,n){
+  data<-as.matrix(data)
+  St_n<-data[1:n]
+  yt_n<-maverick_use[1:n,]$Yt2
+  
+  lm<-lm(St_n ~ yt_n + I((yt_n)^2))
+  
+  a <- lm$coef[1]
+  b <- lm$coef[2]
+  c <- lm$coef[3]
+  
+  m<-ifelse((-b - sqrt(b^2-4*a*c))/(2*c)>0, (-b - sqrt(b^2-4*a*c))/(2*c), (-b + sqrt(b^2-4*a*c))/(2*c))
+  p<- a/m
+  q<- b+p
+  # 상대오차값
+  mse.bass <- 100 * (m - m.real) / m.real
+  list(bass.mpq=c('m'=m,'p'=p,'q'=q),mse.bass=mse.bass)
+}
+
+time<- c(maverick_use[maverick_use$date == as.Date("2022-06-22") + days(6),2], maverick_use[maverick_use$date == as.Date("2022-06-22") + days(13),2], maverick_use[maverick_use$date == as.Date("2022-06-22") + days(27),2])
+
+
+bass7 <- bass(maverick_use$St2,time[1])
+bass14 <- bass(maverick_use$St2,time[2])
+bass28 <- bass(maverick_use$St2,time[3])
+
+#Logistic
+logistic<-function(data,n){
+  data<-as.matrix(data)
+  St_n<-data[1:n]
+  yt_n<-maverick_use[1:n,]$Yt2
+  
+  lm<-lm(St_n ~ 0 + yt_n + I((yt_n)^2))
+  
+  # (m,p,q)
+  p <- 0
+  q <- lm$coef[1]
+  m <- -lm$coef[1]/lm$coef[2]
+  mu <- maverick_use$t[which.max(lm$fitted.values)]
+  
+  logit.mq <- c(m,p,q)
+  mse.logit <- 100 * (logit.mq[1] - m.real) / m.real
+  list(logit.mq=logit.mq,logit.mu = mu, mse.logit=mse.logit)
+}
+
+logi7 <- logistic(maverick_use$St2, time[1])
+logi14 <- logistic(maverick_use$St2, time[2])
+logi28 <- logistic(maverick_use$St2, time[3])
+
+
+#Gumbel
+gumbel<-function(data,n){
+  data<-as.matrix(data)
+  St_n<-data[1:n]
+  yt_n<-maverick_use[1:n,]$Yt2
+  
+  lm<-lm(St_n ~ 0 + yt_n + I((yt_n) * log(yt_n)))
+  
+  # (m,p,q)
+  p <- 0
+  q <- -lm$coef[2]
+  m <- exp(lm$coef[1] / q)
+  mu <- maverick_use$t[which.max(lm$fitted.values)]
+  
+  gum.mq <- c(m,p,q)
+  mse.gum <- 100 * (gum.mq[1] - m.real) / m.real
+  list(gum.mq=gum.mq, gum.mu = mu, mse.gum=mse.gum)
+}
+
+gum7 <- gumbel(maverick_use$St2, time[1])
+gum14 <- gumbel(maverick_use$St2, time[2])
+gum28 <- gumbel(maverick_use$St2, time[3])
+
+
+#Exponential
+exponential<-function(data,n){
+  data<-as.matrix(data)
+  St_n<-data[1:n]
+  yt_n<-maverick_use[1:n,]$Yt2
+  
+  lm<-lm(St_n ~ yt_n)
+  
+  # (m,p)
+  p <- -lm$coef[2]
+  m <- lm$coef[1] / p
+  q <- 0
+  
+  mu <- maverick_use$t[which.max(lm$fitted.values)]
+  
+  gum.mq <- c(m,p,q)
+  mse.gum <- 100 * (gum.mq[1] - m.real) / m.real
+  list(gum.mq=gum.mq, gum.mu = mu, mse.gum=mse.gum)
+}
+
+exp7 <- exponential(maverick_use$St2, time[1])
+exp14 <- exponential(maverick_use$St2, time[2])
+exp28 <- exponential(maverick_use$St2, time[3])
+```
+
+
+### 추정된 $m,p,q$와 상대오차
+```{r}
+#모수 추정
+#Bass
+bass.tg<-rbind(unlist(bass7)[1:3],unlist(bass14)[1:3],unlist(bass28)[1:3])
+colnames(bass.tg)<-c("m","p","q")
+rownames(bass.tg)<-c("t=7","t=14","t=28")
+bass.tg
+
+#Logistic
+logi.tg<-rbind(unlist(logi7)[1:3],unlist(logi14)[1:3],unlist(logi28)[1:3])
+colnames(logi.tg)<-c("m","p","q")
+rownames(logi.tg)<-c("t=7","t=14","t=28")
+logi.tg
+
+#Gumbel
+gum.tg<-rbind(unlist(gum7)[1:3],unlist(gum14)[1:3],unlist(gum28)[1:3])
+colnames(gum.tg)<-c("m","p","q")
+rownames(gum.tg)<-c("t=7","t=14","t=28")
+gum.tg
+
+#Exponential
+exp.tg<-rbind(unlist(exp7)[1:3],unlist(exp14)[1:3],unlist(exp28)[1:3])
+colnames(exp.tg)<-c("m","p","q")
+rownames(exp.tg)<-c("t=7","t=14","t=28")
+exp.tg
+
+#total table
+list("bass" = bass.tg, "logistic"=logi.tg, "gumbel" = gum.tg, "exponential" = exp.tg)
+#상대오차
+rel.error<-data.frame("bass" = c(bass7$mse.bass, bass14$mse.bass, bass28$mse.bass),
+                      "logistic" = c(logi7$mse.logit, logi14$mse.logit, logi28$mse.logit),
+                      "gumbel" = c(gum7$mse.gum, gum14$mse.gum, gum28$mse.gum),
+                      "exponential" = c(exp7$mse.gum, exp14$mse.gum, exp28$mse.gum))
+rownames(rel.error)<-c("t=7","t=14","t=28")
+rel.error
+```
+n에 상관없이 bass 모형이 가장 상대오차를 작게 가지기 때문에 최적 모형이라고 할 수 있다.
+
+##Q-Q plot
+```{r fig.width=15, fig.height=16}
+library(GGally)
+# Q-Q plot
+##bass
+total1=maverick_use$Yt2[length(maverick_use$Yt2)]
+
+### t=7
+p1=bass.tg[1,2] ; q1=bass.tg[1,3] ; k1=p1+q1 ; c1=q1/p1
+### t=14
+p2=bass.tg[2,2] ; q2=bass.tg[2,3] ; k2=p2+q2; c2=q2/p2
+### t=28
+p3=bass.tg[3,2] ; q3=bass.tg[3,3] ; k3=p3+q3; c3=q3/p3
+
+
+quan_logi<-function(pr, n){
+  mu<-summary(lm(t~log(pr/(1-pr)), maverick_use[1:n,]))$coef[1]; sigma<-summary(lm(t~log(pr/(1-pr)), maverick_use[1:n,]))$coef[2] #sigma=1/q
+  return(mu+sigma*log(pr/(1-pr)))
+}
+
+quan_gum<-function(pr, n){
+  mu<-summary(lm(t~ -log(-log(pr)), maverick_use[1:n,]))$coef[1];
+  sigma<-summary(lm(t~ -log(-log(pr)), maverick_use[1:n,]))$coef[2] #sigma=1/q
+  return(mu+sigma*(-log(-log(pr))))
+}
+
+quan_exp <- function(pr, n){
+  model_summary <- summary(lm(t ~ -log(1 - pr), data = maverick_use[1:n, ]))
+  mu <- model_summary$coef[1]
+  sigma <- model_summary$coef[2] # sigma = 1/q
+  return(mu + sigma * (-log(1 - pr)))
+}
+
+
+oneweek<-maverick_use[1:time[1],] %>% select(t, St2) %>%
+  mutate(pr=cumsum(St2)/(total1+1),
+         bass=(1/k1)*log((1+c1*pr)/(1-pr)),
+         logi=quan_logi(pr, time[1]),
+         gum=quan_gum(pr, time[1]),
+         exp=quan_exp(pr, time[1]))
+
+twoweek<-maverick_use[1:time[2],] %>% select(t, St2) %>%
+  mutate(pr=cumsum(St2)/(total1+1),
+         bass=(1/k2)*log((1+c2*pr)/(1-pr)),
+         logi=quan_logi(pr, time[2]),
+         gum=quan_gum(pr, time[2]),
+         exp=quan_exp(pr, time[2]))
+
+fourweek<-maverick_use[1:time[3],] %>% select(t, St2) %>%
+  mutate(pr=cumsum(St2)/(total1+1),
+         bass=(1/k3)*log((1+c3*pr)/(1-pr)),
+         logi=quan_logi(pr, time[3]),
+         gum=quan_gum(pr, time[3]),
+         exp=quan_exp(pr, time[3]))
+
+#Bass
+qqbass7<-ggplot(oneweek, aes(bass, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="Bass t=7 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~bass, oneweek))$r.squared, 4)*100,"%"))
+qqbass14<-ggplot(twoweek, aes(bass, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="Bass t=14 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~bass, twoweek))$r.squared, 4)*100,"%"))
+qqbass28<-ggplot(fourweek, aes(bass, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="Bass t=28 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~bass, fourweek))$r.squared, 4)*100,"%"))
+
+#logistic
+qqlogi7<-ggplot(oneweek, aes(logi, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="Logistic t=7 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~logi, oneweek))$r.squared, 4)*100,"%"))
+qqlogi14<-ggplot(twoweek, aes(logi, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="Logistic t=14 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~logi, twoweek))$r.squared, 4)*100,"%"))
+qqlogi28<-ggplot(fourweek, aes(logi, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="Logistic t=28 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~logi, fourweek))$r.squared, 4)*100,"%"))
+
+#gumbel
+qqgum7<-ggplot(oneweek, aes(gum, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="Gumbel t=7 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~gum, oneweek))$r.squared, 4)*100,"%"))
+qqgum14<-ggplot(twoweek, aes(gum, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="Gumbel t=14 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~gum, twoweek))$r.squared, 4)*100,"%"))
+qqgum28<-ggplot(fourweek, aes(gum, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="Gumbel t=28 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~gum, fourweek))$r.squared, 4)*100,"%"))
+
+
+#exponential
+qqexp7<-ggplot(oneweek, aes(exp, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="exponential t=7 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~exp, oneweek))$r.squared, 4)*100,"%"))
+qqexp14<-ggplot(twoweek, aes(exp, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="exponential t=14 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~exp, twoweek))$r.squared, 4)*100,"%"))
+qqexp28<-ggplot(fourweek, aes(exp, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="exponential t=28 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~exp, fourweek))$r.squared, 4)*100,"%"))
+
+grid.arrange(qqbass7, qqbass14, qqbass28, qqlogi7, qqlogi14, qqlogi28, qqgum7, qqgum14, qqgum28, qqexp7, qqexp14, qqexp28, ncol=3)
+```
+실제 m을 가지고 Q-Q plot을 그려보았을 때 t=7에서는 exponential, t=14에서는 Bass, t=28에서도 Bass 모형이 가장 높은 R-sqaured를 가졌다. 따라서, Bass 모형이 가장 적절하다고 볼 수 있다.
+
+## 2. 오펜하이머
+```{r include=FALSE}
+library(ggplot2)
+library(tidyverse)
+library(rootSolve); library(optimx) ; library(gridExtra)
+```
+
+```{r}
+setwd("C:/Temp")
+library(readxl)
+oph<-read_excel("오펜하이머.xlsx", skip=3, col_names=TRUE)
+head(oph)
+oph_use<-oph[,c("날짜","관객수", "누적관객수")]
+oph_use$t <- seq(1,nrow(oph_use))
+oph_use <- oph_use[,c("날짜","t","관객수","누적관객수")]
+colnames(oph_use)<-c("date", "t", "St", "Yt")
+oph_use$weekday <- weekdays(oph_use$date)
+oph_use$wday <- factor(oph_use$weekday %in% c('토요일','일요일'),labels=c('평일','주말'))
+oph_use$date<-as.Date(oph_use$date)
+oph_use
+
+#공휴일 (2018~2024 자료)
+holiday<-read_excel("국가공휴일_2024년 까지_v2.xlsx")
+holiday$date<-paste(holiday$년, holiday$월, holiday$일, sep = "-")
+holiday$date<-as.Date(holiday$date)
+holiday_use<-holiday[,c("date","설명")]
+holiday_use
+
+oph_use$holiday<-oph_use$date %in% holiday$date #holiday면 TRUE 입력
+oph_use$holiday[oph_use$wday == '주말'] <- TRUE
+oph_use
+
+#주말/공휴일 효과 보정 X
+library(ggplot2)
+ggplot(oph_use, aes(t, St))+geom_line(color="blue") + geom_point(color="blue")+
+  ggtitle("Oppenheimer S(t) plot")+ labs(subtitle='보정 전 관객수')
+
+ggplot(oph_use, aes(t, Yt))+geom_line(color="red") +
+  ggtitle("Oppenheimer Y(t) plot")+ labs(subtitle='보정 전 누적관객수')
+```
+
+
+## 주말/공휴일 효과 보정
+```{r}
+library(dplyr)
+mean(oph_use$St[oph_use$holiday == TRUE]) #주말/공휴일 평균관객수 #202263.3
+mean(oph_use$St[oph_use$holiday != TRUE]) #평일/비공휴일 평균관객수 #61672.05
+mean(oph_use$St[oph_use$holiday == TRUE]) / mean(oph_use$St[oph_use$holiday != TRUE]) #3.41로 3배 가량 차이가 나지만 완만한 curve를 위해 주말/공휴일 관객수에 1/3을 보정한다
+
+oph_use <- oph_use %>% mutate(repnum = ifelse(holiday==TRUE,3,1))
+oph_use <- as.data.frame(lapply(oph_use, rep, oph_use$repnum))
+oph_use$St2 <- ifelse(oph_use$holiday == TRUE, oph_use$St/3, oph_use$St)
+oph_use<-oph_use %>% select(c(date, St, St2))
+oph_use<-oph_use[,c("date","St","St2")]
+oph_use$Yt2 <- c(0, cumsum(oph_use$St2)[1:nrow(oph_use)-1])
+oph_use$t <- seq(1,nrow(oph_use))
+oph_use
+
+ggplot(oph_use)+geom_line(aes(t, St, color='blue'))+geom_line(aes(t,St2, color='orange'))+scale_color_discrete(labels=c("보정전 관객수", "보정후 관객수"))
+
+
+#주말/공휴일 효과 보정 O
+library(ggplot2)
+ggplot(oph_use, aes(t, St2))+geom_line(color="blue") + geom_point(color="blue")+
+  ggtitle("Oppenheimer S(t)2 plot") + labs(subtitle='보정 후 관객수')
+
+ggplot(oph_use, aes(t, Yt2))+geom_line(color="red") +
+  ggtitle("Oppenheimer Y(t)2 plot") + labs(subtitle='보정 후 누적관객수')
+```
+
+```{r}
+options(scipen=999)
+oph_use$date <- as.Date(oph_use$date)
+oph_use <- oph_use[oph_use$date >= '2023-08-15', ] #개봉 전 일수 자르기
+oph_use$t <- seq(1,nrow(oph_use))
+oph_use <- oph_use[,c("date","t","St2","Yt2")]
+
+
+max(oph_use$Yt2) #2992134
+m.real <- 3005871
+#3005871를 실제총수요로 설정
+
+start <- c(oph_use[oph_use$date == as.Date('2023-08-16'), 2])
+
+time<- c(oph_use[oph_use$date == as.Date("2023-08-15") + days(6),2], oph_use[oph_use$date == as.Date("2023-08-15") + days(13),2], oph_use[oph_use$date == as.Date("2023-08-15") + days(20),2])
+
+# Bass
+bass<-function(data,n){
+  data<-as.matrix(data)
+  St_n<-data[start:n]
+  yt_n<-c(0,cumsum(St_n)[start:(n-1)])
+  
+  lm<-lm(St_n ~ yt_n + I((yt_n)^2))
+  
+  a <- lm$coef[1]
+  b <- lm$coef[2]
+  c <- lm$coef[3]
+  
+  m<- (-b-sqrt(b^2-4*a*c))/(2*c)
+  p<- a/m
+  q<- b+p
+  # 상대오차값
+  mse.bass <- 100 * (m - m.real) / m.real
+  list(bass.mpq=c('m'=m,'p'=p,'q'=q),mse.bass=mse.bass)
+}
+
+bass7.oph <- bass(oph_use$St2,time[1])
+bass14.oph <- bass(oph_use$St2,time[2])
+bass21.oph <- bass(oph_use$St2,time[3])
+
+#Logistic
+logistic<-function(data,n){
+  data<-as.matrix(data)
+  St_n<-data[1:n]
+  yt_n<-c(0,cumsum(St_n)[1:(n-1)])
+  
+  lm<-lm(St_n ~ 0 + yt_n + I((yt_n)^2))
+  
+  # (m,p,q)
+  p <- 0
+  q <- lm$coef[1]
+  m <- -lm$coef[1]/lm$coef[2]
+  mu <- oph_use$t[which.max(lm$fitted.values)]
+  
+  logit.mq <- c(m,p,q)
+  mse.logit <- 100 * (logit.mq[1] - m.real) / m.real
+  list(logit.mq=logit.mq,logit.mu = mu, mse.logit=mse.logit)
+}
+
+logi7.oph <- logistic(oph_use$St2, time[1])
+logi14.oph <- logistic(oph_use$St2, time[2])
+logi21.oph <- logistic(oph_use$St2, time[3])
+
+
+#Gumbel
+gumbel<-function(data,n){
+  data<-as.matrix(data)
+  St_n<-data[1:n]
+  yt_n<-c(0,cumsum(St_n)[1:(n-1)])
+  
+  lm<-lm(St_n ~ 0 + yt_n + I((yt_n) * log(yt_n)))
+  
+  # (m,p,q)
+  p <- 0
+  q <- -lm$coef[2]
+  m <- exp(lm$coef[1] / q)
+  mu <- oph_use$t[which.max(lm$fitted.values)]
+  
+  gum.mq <- c(m,p,q)
+  mse.gum <- 100 * (gum.mq[1] - m.real) / m.real
+  list(gum.mq=gum.mq, gum.mu = mu, mse.gum=mse.gum)
+}
+
+gum7.oph <- gumbel(oph_use$St2, time[1])
+gum14.oph <- gumbel(oph_use$St2, time[2])
+gum21.oph <- gumbel(oph_use$St2, time[3])
+
+
+#Exponential
+exponential<-function(data,n){
+  data<-as.matrix(data)
+  St_n<-data[1:n]
+  yt_n<-c(0,cumsum(St_n)[1:(n-1)])
+  
+  lm<-lm(St_n ~ yt_n)
+  
+  # (m,p)
+  p <- -lm$coef[2]
+  m <- lm$coef[1] / p
+  q <- 0
+  
+  mu <- oph_use$t[which.max(lm$fitted.values)]
+  
+  gum.mq <- c(m,p,q)
+  mse.gum <- 100 * (gum.mq[1] - m.real) / m.real
+  list(gum.mq=gum.mq, gum.mu = mu, mse.gum=mse.gum)
+}
+
+exp7.oph <- exponential(oph_use$St2, time[1])
+exp14.oph <- exponential(oph_use$St2, time[2])
+exp21.oph <- exponential(oph_use$St2, time[3])
+```
+
+
+### 추정된 $m,p,q$와 상대오차
+```{r}
+#모수 추정
+#Bass
+bass.oph<-rbind(unlist(bass7.oph)[1:3],unlist(bass14.oph)[1:3],unlist(bass21.oph)[1:3])
+colnames(bass.oph)<-c("m","p","q")
+rownames(bass.oph)<-c("t=7","t=14","t=21")
+bass.oph
+
+#Logistic
+logi.oph<-rbind(unlist(logi7.oph)[1:3],unlist(logi14.oph)[1:3],unlist(logi21.oph)[1:3])
+colnames(logi.oph)<-c("m","p","q")
+rownames(logi.oph)<-c("t=7","t=14","t=21")
+logi.oph
+
+#Gumbel
+gum.oph<-rbind(unlist(gum7.oph)[1:3],unlist(gum14.oph)[1:3],unlist(gum21.oph)[1:3])
+colnames(gum.oph)<-c("m","p","q")
+rownames(gum.oph)<-c("t=7","t=14","t=21")
+gum.oph
+
+#Exponential
+exp.oph<-rbind(unlist(exp7.oph)[1:3],unlist(exp14.oph)[1:3],unlist(exp21.oph)[1:3])
+colnames(exp.oph)<-c("m","p","q")
+rownames(exp.oph)<-c("t=7","t=14","t=21")
+exp.oph
+
+#total table
+list("bass" = bass.oph, "logistic"=logi.oph, "gumbel" = gum.oph, "exponential" = exp.oph)
+#상대오차
+rel.error<-data.frame("bass" = c(bass7.oph$mse.bass, bass14.oph$mse.bass, bass21.oph$mse.bass),
+                      "logistic" = c(logi7.oph$mse.logit, logi14.oph$mse.logit, logi21.oph$mse.logit),
+                      "gumbel" = c(gum7.oph$mse.gum, gum14.oph$mse.gum, gum21.oph$mse.gum),
+                      "exponential" = c(exp7.oph$mse.gum, exp14.oph$mse.gum, exp21.oph$mse.gum))
+rownames(rel.error)<-c("t=7","t=14","t=21")
+rel.error
+```
+t=7일 때 bass, t=14일 때 exponential이 가장 예측력이 좋고, t=21일 때는 gumbel이 가장 상대오차의 절대값이 작으므로 예측력이 좋다고 할 수 있다.
+
+
+##Q-Q plot
+```{r fig.width=20}
+library(GGally)
+# Q-Q plot
+##bass
+### t=7
+p11=bass.oph[1,2] ; q11=bass.oph[1,3] ; k11=p11+q11 ; c11=q11/p11
+### t=14
+p22=bass.oph[2,2] ; q22=bass.oph[2,3] ; k22=p22+q22; c22=q22/p22
+### t=21
+p33=bass.oph[3,2] ; q33=bass.oph[3,3] ; k33=p33+q33; c33=q33/p33
+
+
+quan_logi<-function(pr, n){
+  mu<-summary(lm(t~log(pr/(1-pr)), oph_use[1:n,]))$coef[1]; sigma<-summary(lm(t~log(pr/(1-pr)), oph_use[1:n,]))$coef[2] #sigma=1/q
+  return(mu+sigma*log(pr/(1-pr)))
+}
+
+quan_gum<-function(pr, n){
+  mu<-summary(lm(t~ -log(-log(pr)), oph_use[1:n,]))$coef[1];
+  sigma<-summary(lm(t~ -log(-log(pr)), oph_use[1:n,]))$coef[2] #sigma=1/q
+  return(mu+sigma*(-log(-log(pr))))
+}
+
+quan_exp <- function(pr, n){
+  model_summary <- summary(lm(t ~ -log(1 - pr), data = oph_use[1:n, ]))
+  mu <- model_summary$coef[1]
+  sigma <- model_summary$coef[2] # sigma = 1/q
+  return(mu + sigma * (-log(1 - pr)))
+}
+
+
+oneweek.oph<-oph_use[1:time[1],] %>% select(t, St2) %>%
+  mutate(pr1=cumsum(St2)/(bass.oph[1,1]+1),
+         pr2=cumsum(St2)/(logi.oph[1,1]+1),
+         pr3=cumsum(St2)/(gum.oph[1,1]+1),
+         pr4=cumsum(St2)/(exp.oph[1,1]+1),
+         bass=(1/k11)*log((1+c11*pr1)/(1-pr1)),
+         logi=quan_logi(pr2, time[1]),
+         gum=quan_gum(pr3, time[1]),
+         exp=quan_exp(pr4, time[1]))
+
+twoweek.oph<-oph_use[1:time[2],] %>% select(t, St2) %>%
+  mutate(pr1=cumsum(St2)/(bass.oph[2,1]+1),
+         pr2=cumsum(St2)/(logi.oph[2,1]+1),
+         pr3=cumsum(St2)/(gum.oph[2,1]+1),
+         pr4=cumsum(St2)/(exp.oph[2,1]+1),
+         bass=(1/k22)*log((1+c22*pr1)/(1-pr1)),
+         logi=quan_logi(pr2, time[2]),
+         gum=quan_gum(pr3, time[2]),
+         exp=quan_exp(pr4, time[2]))
+
+fourweek.oph<-oph_use[1:time[3],] %>% select(t, St2) %>%
+  mutate(pr1=cumsum(St2)/(bass.oph[3,1]+1),
+         pr2=cumsum(St2)/(logi.oph[3,1]+1),
+         pr3=cumsum(St2)/(gum.oph[3,1]+1),
+         pr4=cumsum(St2)/(exp.oph[3,1]+1),
+         bass=(1/k33)*log((1+c33*pr1)/(1-pr1)),
+         logi=quan_logi(pr2, time[3]),
+         gum=quan_gum(pr3, time[3]),
+         exp=quan_exp(pr4, time[3]))
+
+#Bass
+qqbass7.oph<-ggplot(oneweek.oph, aes(bass, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="Bass t=7 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~bass, oneweek.oph))$r.squared, 4)*100,"%"))
+qqbass14.oph<-ggplot(twoweek.oph, aes(bass, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="Bass t=14 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~bass, twoweek.oph))$r.squared, 4)*100,"%"))
+qqbass21.oph<-ggplot(fourweek.oph, aes(bass, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="Bass t=21 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~bass, fourweek.oph))$r.squared, 4)*100,"%"))
+
+#logistic
+qqlogi7.oph<-ggplot(oneweek.oph, aes(logi, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="Logistic t=7 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~logi, oneweek.oph))$r.squared, 4)*100,"%"))
+qqlogi14.oph<-ggplot(twoweek.oph, aes(logi, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="Logistic t=14 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~logi, twoweek.oph))$r.squared, 4)*100,"%"))
+qqlogi21.oph<-ggplot(fourweek.oph, aes(logi, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="Logistic t=21 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~logi, fourweek.oph))$r.squared, 4)*100,"%"))
+
+#gumbel
+qqgum7.oph<-ggplot(oneweek.oph, aes(gum, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="Gumbel t=7 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~gum, oneweek.oph))$r.squared, 4)*100,"%"))
+qqgum14.oph<-ggplot(twoweek.oph, aes(gum, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="Gumbel t=14 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~gum, twoweek.oph))$r.squared, 4)*100,"%"))
+qqgum21.oph<-ggplot(fourweek.oph, aes(gum, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="Gumbel t=21 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~gum, fourweek.oph))$r.squared, 4)*100,"%"))
+
+
+#exponential
+qqexp7.oph<-ggplot(oneweek.oph, aes(exp, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="exponential t=7 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~exp, oneweek.oph))$r.squared, 4)*100,"%"))
+qqexp14.oph<-ggplot(twoweek.oph, aes(exp, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="exponential t=14 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~exp, twoweek.oph))$r.squared, 4)*100,"%"))
+qqexp21.oph<-ggplot(fourweek.oph, aes(exp, t))+geom_point()+geom_smooth(method="lm", se=FALSE)+labs(title="exponential t=21 Q-Q plot", subtitle=paste0("R.squared = ", round(summary(lm(t~exp, fourweek.oph))$r.squared, 4)*100,"%"))
+
+grid.arrange(qqbass7.oph, qqlogi7.oph, qqgum7.oph, qqexp7.oph, qqbass14.oph, qqlogi14.oph, qqgum14.oph, qqexp14.oph,qqbass21.oph, qqlogi21.oph, qqgum21.oph, qqexp21.oph, ncol=4)
+```
+t=7일 때는 exponential이 가장 예측력이 좋고, t=14일 때는 Bass와 exponential이 엇비슷하게 가장 좋다. 마지막으로 t=21일 때 Gumbel이 가장 좋은 예측력을 가진다.
