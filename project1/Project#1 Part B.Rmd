@@ -1,0 +1,457 @@
+
+# Part B-1. Covid 19 사망자 예측
+
+
+```{r}
+library(dplyr)
+library(tidyverse)
+library(optimx)
+```
+
+```{r}
+covid1 <- read.csv("covid.csv")
+```
+
+## (1) 시계열도표 
+
+```{r}
+ggplot(covid1, aes(x=date,y=new_deaths)) + geom_point() +
+scale_x_discrete(breaks=c("2020-04-01", "2020-06-01", "2020-08-01"))
+```
+
+```{r}
+ggplot(covid1, aes(x=date,y=total_deaths)) + geom_point() +
+scale_x_discrete(breaks=c("2020-04-01", "2020-06-01", "2020-08-01"))
+```
+
+
+## (2) 최초 사망자가 발생한 날부터 초기 n일까지 총 감염자수 추정
+
+OLS 추정
+
+```{r}
+# bass 모형
+ols_bass <- function(n){
+   st <- covid1$new_deaths[1:n] 
+   yt <- cumsum(st)         
+   yt_1 <- c(0,yt[2:n-1])       
+   m_new <- cumsum(covid1$new_deaths)[nrow(covid1)] 
+
+   lm1 <- lm(st ~ yt_1 + I(yt_1^2))$coef
+   a <- lm1[1]
+   b <- lm1[2]
+   c <- lm1[3]
+
+   q <- max(Re(polyroot(c(a*c,-b,1))))  
+   m <- -q/c;  m <- m[[1]]
+   p <- a/m;  p <- p[[1]]
+   error <- 100*abs(m-m_new)/m_new
+
+   cbind(m=m, p=p, q=q, error=error)
+}
+```
+
+```{r}
+# logistic 모형
+ols_logistic <- function(n){
+   st <- covid1$new_deaths[1:n] 
+   yt <- cumsum(st)         
+   yt_1 <- c(0,yt[2:n-1])       
+   m_new <- cumsum(covid1$new_deaths)[nrow(covid1)]             
+
+   lm1 <- lm(st ~ yt_1 + I(yt_1^2) - 1)$coef
+   a <- lm1[1]
+   b <- lm1[2]
+
+   q <- a;  q <- q[[1]]
+   m <- -q/b;  m <- m[[1]]
+   error <- 100*abs(m-m_new)/m_new
+
+   cbind(m=m, q=q, error=error)
+}
+```
+
+```{r}
+# gumbel 모형
+ols_gumbel <- function(n){
+   st <- covid1$new_deaths[1:n] 
+   yt <- cumsum(st)          
+   yt_1 <- c(0,yt[2:n-1])        
+   m_new <- cumsum(covid1$new_deaths)[nrow(covid1)]          
+
+   lm1 <- lm(st ~ yt_1 + I(yt_1*log(yt_1)) - 1)$coef
+   a <- lm1[1]
+   b <- lm1[2]
+
+   q <- -b;  q <- q[[1]]
+   m <- exp(a/q);  m <- m[[1]]
+   error <- 100*abs(m-m_new)/m_new
+
+   cbind(m=m, q=q, error=error)
+}
+```
+
+```{r}
+ols_bass(20)
+ols_bass(30)
+ols_bass(50)
+```
+
+```{r}
+ols_logistic(20)
+ols_logistic(30)
+ols_logistic(50)
+```
+
+```{r}
+ols_gumbel(20)
+ols_gumbel(30)
+ols_gumbel(50)
+```
+
+
+
+MSE 추정
+
+```{r}
+# bass 모형
+mse_bass <- function(n){
+   t <- c(1:n)
+   st <- covid1$new_deaths[1:n] 
+   yt <- cumsum(st)                 
+   m_new <- cumsum(covid1$new_deaths)[nrow(covid1)] 
+
+   f <- function(par){
+      m <- par[1];   p <- par[2];   q <- par[3]
+      y <- m*(1-exp(-(p+q)*t)) / (1+(q/p)*exp(-(p+q)*t))
+      MSE <- sum((y-yt)^2)/n
+   }
+
+   optim1 <- optim(par=ols_bass(n)[1:3], f, hessian=T)
+   m <- optim1$par[1]   
+   p <- optim1$par[2]
+   q <- optim1$par[3]
+   MSE <- optim1$value
+   error <- 100*abs(m-m_new)/m_new
+
+   cbind(m=m, p=p, q=q, error=error, MSE=MSE)
+}
+```
+
+```{r}
+# logistic 모형
+mse_logistic <- function(n){
+   t <- c(1:n)
+   st <- covid1$new_deaths[1:n] 
+   yt <- cumsum(st)                 
+   m_new <- cumsum(covid1$new_deaths)[nrow(covid1)]   
+
+   f <- function(par){
+      m <- par[1];   q <- par[2];   mu <- mean(t)
+      y <- m/(1+exp(-q*(t-mu)))
+      MSE <- sum((y-yt)^2)/n
+   }
+
+   optim1 <- optim(par=ols_logistic(n)[1:2], f, hessian=T)
+   m <- optim1$par[1]   
+   q <- optim1$par[2]
+   MSE <- optim1$value
+   error <- 100*abs(m-m_new)/m_new
+
+   cbind(m=m, q=q, error=error, MSE=MSE)
+}
+```
+
+```{r}
+# gumbel 모형
+mse_gumbel <- function(n){
+   t <- c(1:n)
+   st <- covid1$new_deaths[1:n] 
+   yt <- cumsum(st)                 
+   m_new <- cumsum(covid1$new_deaths)[nrow(covid1)]   
+
+   f <- function(par){
+      m <- par[1];   q <- par[2];   mu <- mean(t)
+      y <- m*exp(-exp(-q*(t-mu)))
+      MSE <- sum((y-yt)^2)/n
+   }
+
+   optim1 <- optim(par=ols_gumbel(n)[1:2], f, hessian=T)
+   m <- optim1$par[1]   
+   q <- optim1$par[2]
+   MSE <- optim1$value
+   error <- 100*abs(m-m_new)/m_new
+
+   cbind(m=m, q=q, error=error, MSE=MSE)
+}
+```
+
+```{r}
+mse_bass(20)
+mse_bass(30)
+mse_bass(50)
+```
+
+```{r}
+mse_logistic(20)
+mse_logistic(30)
+mse_logistic(50)
+```
+
+```{r}
+mse_gumbel(20)
+mse_gumbel(30)
+mse_gumbel(50)
+```
+
+
+
+# Part B-2. 미국 및 한국의 HIV/AIDS 확산예측
+
+```{r}
+library(dplyr)
+library(tidyverse)
+library(optimx)
+library(rootSolve)
+```
+
+
+## 1. 미국
+
+```{r}
+us <- read.csv("aids_usa.csv")
+colnames(us)<-c("year","quarter","t","St","Yt")
+head(us)
+```
+
+### (a) 시계열도표 
+
+```{r, warning=FALSE}
+ggplot(data=us, aes(x=t, y=St)) +
+  geom_line(color="red", size=1) +
+  ggtitle("1981-1997 t별 미국 HIV/AIDS 감염자수")
+```
+
+
+### (b) 미국 내 총 감염자수 추정
+
+```{r}
+# Bass 모형
+bass<-function(us,n){
+  us<-as.matrix(us)
+  St_n<-us[1:n]
+  yt_n<-c(0,cumsum(St_n)[1:(n-1)])
+  
+  lm<-lm(St_n ~ yt_n + I((yt_n)^2))
+  
+  a <- lm$coef[1]
+  b<-lm$coef[2]
+  c<-lm$coef[3]
+  
+  model <- function(x) {c(x[1] * x[2] - a, x[3] - x[2] - b, -x[3] / x[1] - c)}
+  ss <- multiroot(f = model, start = c(sum(us[1:n]),0.1,0.1)) 
+  bass.mpq <- ss$root
+  mse.bass <- 100*(bass.mpq[1] - 1279443) / 1279443 
+  list(bass.mpq=bass.mpq, mse.bass=mse.bass)
+}
+```
+
+```{r}
+# Logistic 모형
+logistic<-function(us,n){
+  us<-as.matrix(us)
+  St_n<-us[1:n]
+  yt_n<-c(0,cumsum(St_n)[1:(n-1)])
+  
+  lm<-lm(St_n ~ 0 + yt_n + I((yt_n)^2))
+  
+  q <- lm$coef[1]
+  m <- -lm$coef[1]/lm$coef[2]
+  
+  logit.mq <- c(m,q)
+  mse.logit <- 100 * (logit.mq[1] - 1279443) / 1279443
+  list(logit.mq=logit.mq, mse.logit=mse.logit)
+}
+```
+
+```{r}
+# Gumbel 모형
+gumbel<-function(us,n){
+  us<-as.matrix(us)
+  St_n<-us[1:n]
+  yt_n<-c(0,cumsum(St_n)[1:(n-1)])
+  
+  lm<-lm(St_n ~ 0 + yt_n + I((yt_n) * log(yt_n)))
+  
+  # (m,q)
+  q<- -lm$coef[2]
+  m<- exp(lm$coef[1] / q)
+  
+  gum.mq <- c(m,q)
+  mse.gum <- 100 * (gum.mq[1] - 1279443) / 1279443
+  list(gum.mq=gum.mq,mse.gum=mse.gum)
+}
+```
+
+```{r}
+bass(us$St,20)
+bass(us$St,40)
+bass(us$St,65)
+```
+
+```{r}
+logistic(us$St,20)
+logistic(us$St,40)
+logistic(us$St,65)
+```
+
+```{r}
+gumbel(us$St,20)
+gumbel(us$St,40)
+gumbel(us$St,65)
+```
+
+
+
+## 2. 한국
+
+```{r}
+aids1 <- read.table("aids_korea.txt")
+aids1 <- aids1[,1:2]
+names(aids1) <- c("date","st")
+for (i in 1:nrow(aids1)){
+  aids1$yt[i] <- sum(aids1$st[1:i])
+  aids1$t[i] <- i
+}
+head(aids1)
+```
+
+### (a) 시계열도표 
+
+```{r}
+ggplot(aids1, aes(x=date,y=st)) + geom_point() + geom_line()
+```
+
+### (b) 산점도
+
+```{r}
+aids2 <- aids1[28:38,]
+aids2$dlnyt <- aids2$st/lag(aids2$yt)
+```
+
+```{r}
+ggplot(aids2, aes(dlnyt, yt)) + geom_point() + ggtitle('dlnYt vs Yt')
+```
+
+```{r}
+ggplot(aids2, aes(dlnyt, log(yt))) + geom_point() + ggtitle('dlnYt vs lnYt')
+```
+
+
+
+최근 10년간의 자료를 이용하여 m,q 추정
+
+```{r}
+aids2 <- aids1[29:38,]
+
+# Logistic 모형
+ols_logistic <- function(){
+   aids2$yt_1 <- c(0,aids2$yt[2:10-1])		
+   lm1 <- lm(st ~ yt_1 + I(yt_1^2) - 1, aids2)$coef
+   a <- lm1[1]
+   b <- lm1[2]
+   q <- a;  q <- q[[1]]
+   m <- -q/b;  m <- m[[1]]
+   cbind(m=m, q=q)
+}
+ols_logistic()
+```
+
+```{r}
+# Gumbel 모형
+ols_gumbel <- function(n){
+   aids2$yt_1 <- c(0,aids2$yt[2:10-1])			 
+   lm1 <- lm(st ~ yt_1 + I(yt_1*log(yt_1)) - 1, aids2)$coef
+   a <- lm1[1]
+   b <- lm1[2]
+   q <- -b;  q <- q[[1]]
+   m <- exp(a/q);  m <- m[[1]]
+   cbind(m=m, q=q)
+}
+ols_gumbel()
+```
+
+
+
+
+### (c) Logistic, Gumbel QQ plot
+
+```{r}
+# Logistic
+m <- ols_logistic()[1]
+aa <- aids1 %>% subset(date>=1995 & date<=2009) %>% mutate(Ur = yt/(m+1), logistic=log(Ur/(1-Ur)))
+
+ggplot(aa, aes(x=logistic, y=date)) + geom_point() + geom_smooth(method = 'lm') 
+```
+
+```{r}
+lm1 <- lm(date~logistic, data= aa)
+mu_l <- lm1$coef[[1]]
+sigma_l <- lm1$coef[[2]]
+mu_l;  sigma_l
+```
+
+```{r}
+# Gumbel
+m <- ols_gumbel()[1]
+bb <- aids1 %>% subset(date>=1995 & date<=2009) %>% mutate(Ur = yt/(m+1), gumbel=-log(-log(Ur)))
+
+ggplot(bb, aes(x=gumbel, y=date)) + geom_point() + geom_smooth(method = 'lm') 
+```
+
+```{r}
+lm2 <- lm(date~gumbel, data=bb)
+mu_g <- lm2$coef[[1]]
+sigma_g <- lm2$coef[[2]]
+mu_g;  sigma_g
+```
+
+
+
+
+### (d) 미래 감염자 수 예측
+
+```{r}
+# Logistic
+m = ols_logistic()[1]
+mu = mu_l
+sigma = sigma_l
+t <- c(1985:2040)
+St <- m*(1/sigma)*exp(-((t-mu)/sigma))/((1+exp(-(t-mu)/sigma))^2)
+pred_l <- data.frame(t, St)
+head(pred_l)
+```
+
+
+
+```{r}
+# Gumbel
+m = ols_gumbel()[1]
+mu = mu_g
+sigma = sigma_g
+t <- c(1985:2040)
+St <- m*(1/sigma)*exp(-((t-mu)/sigma))*exp(-exp(-((t-mu)/sigma)))
+pred_g <- data.frame(t, St)
+head(pred_g)
+```
+
+
+
+시계열도표&예측값
+
+```{r}
+ggplot() + geom_line(aids1, mapping=aes(x=date, y=st, color='actual'), lwd=1) + geom_line(pred_l, mapping=aes(x=t, y=St, color='logistic'), lwd=1) + geom_line(pred_g, mapping=aes(x=t, y=St, color='gumbel'), lwd=1) + ylab('Infections')
+```
+
+
+
