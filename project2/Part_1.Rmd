@@ -1,0 +1,449 @@
+---
+title: "[Part 1] 상해보험"
+output:
+  html_document:
+    fig_height: 4
+    fig_width: 7
+    highlight: textmate
+    theme: cosmo
+    df_print: paged
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r include=FALSE}
+library(optimx)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(readxl)
+library(leaps)
+library(MASS)
+library(kableExtra)
+```
+
+```{r message=FALSE, warning=FALSE}
+setwd("~/Desktop/2023-2/이론통계학II/HW2")
+# 데이터 불러오기
+accid<-read_excel("상해보험자료2.xls", col_names = c("x","count"),range = "A2:B51",
+                  sheet = "Table2-No-Deductible", col_types = c("numeric", "numeric"))
+head(accid)
+```
+
+**`accid`에는 50만원 이상 자료 포함 안 됨** (50만원 이상 count = 3541, 전체 건수 8443)
+
+### 1. `X`(사고 치료비)의 Histogram
+
+```{r echo=FALSE, fig.align = 'center'}
+ggplot(accid, aes(x,count)) +
+  geom_bar(stat = "identity", fill = "royalblue") + theme_minimal()+
+  ggtitle("Histogram of X")
+```
+
+### 2. `X`에 가장 적합한 확률 분포 찾기
+
+　-　히스토그램 및 Q-Q plot 이용
+
+　-　보험금의 대표적인 분포(로그노말, 파레토, 와이블, 역와이블, 로그로지스틱) 중 선택
+
+```{r}
+# 총 보상 건수
+n<-8443
+```
+
+
+
+#### 로그 노말
+
+```{r}
+qq_lognorm<-function(dat){
+  dat <- dat %>% mutate(p = cumsum(count)/(n+1),
+                        theo = qnorm(p),
+                        samp = log(x))
+  myLM<-lm(samp~theo, data=dat)
+  myR2<-summary(myLM)$r.squared
+  myplt <- dat %>% ggplot(aes(theo, samp)) + geom_point(size = 2) +
+    geom_smooth(method = "lm", se=F, color = "royalblue") + theme_minimal() +
+    ggtitle("Lognormal Q-Q Plot", subtitle = paste("R^2 =", round(myR2,3))) +
+    xlab("Theoretical") + ylab("Sample")
+  mylst <- list(draw_qq=myplt, R2=myR2, mu=myLM$coef[1], sig=myLM$coef[2])
+  return(mylst)
+}
+
+g1<-qq_lognorm(accid)$draw_qq
+```
+
+
+#### 파레토
+
+
+```{r}
+qq_pareto<-function(dat){
+  myL<-seq(1,150,by=1); p<-Yr<-myR<-c()
+  for(i in 1:length(myL)){
+    p<-cumsum(dat$count)/(n+1)
+    Yr<-log(1+dat$x/myL[i])
+    R<-summary(lm(Yr~I(-log(1-p))+0))$r.squared
+    myR[i]<-R
+  }
+  cand<-data.frame(myL, myR)
+  lambda<-cand$myL[which.max(myR)]
+  
+  dat <- dat %>% mutate(p = cumsum(count)/(n+1),
+                        theo = -log(1-p),
+                        samp = log(1 + x/lambda))
+  myLM<-lm(samp~theo+0, data=dat)
+  myR2<-summary(myLM)$r.squared
+  myplt <- dat %>% ggplot(aes(theo, samp)) + geom_point(size = 2) +
+    geom_smooth(method = "lm", se=F, color = "royalblue") + theme_minimal() +
+    ggtitle("Pareto Q-Q Plot", subtitle = paste("R^2 =", round(myR2,3))) +
+    xlab("Theoretical") + ylab("Sample")
+  mylst <- list(draw_qq=myplt, R2=myR2, alpha=1/myLM$coef[1], lambda=lambda)
+  return(mylst)
+}
+
+g2<-qq_pareto(accid)$draw_qq
+```
+
+
+
+#### 와이블
+
+
+```{r}
+qq_weibull<-function(dat){
+  dat <- dat %>% mutate(p = cumsum(count)/(n+1),
+                        theo = log(-log(1-p)),
+                        samp = log(x))
+  myLM<-lm(samp~theo, data=dat)
+  myR2<-summary(myLM)$r.squared
+  myplt <- dat %>% ggplot(aes(theo, samp)) + geom_point(size = 2) +
+    geom_smooth(method = "lm", se=F, color = "royalblue") + theme_minimal() +
+    ggtitle("Weibull Q-Q Plot", subtitle = paste("R^2 =", round(myR2,3))) +
+    xlab("Theoretical") + ylab("Sample")
+  # 모수가 c랑 tau
+  mu<-myLM$coef[1]
+  sig<-myLM$coef[2]
+  mylst <- list(draw_qq=myplt, R2=myR2, c=exp(-mu), tau=1/sig)
+  return(mylst)
+}
+
+g3<-qq_weibull(accid)$draw_qq
+```
+
+
+#### 역와이블(프레셰, 로그굼벨)
+
+
+```{r}
+qq_frechet<-function(dat){
+  dat <- dat %>% mutate(p = cumsum(count)/(n+1),
+                        theo = -log(-log(p)),
+                        samp = log(x))
+  myLM<-lm(samp~theo, data=dat)
+  myR2<-summary(myLM)$r.squared
+  myplt <- dat %>% ggplot(aes(theo, samp)) + geom_point(size = 2) +
+    geom_smooth(method = "lm", se=F, color = "royalblue") + theme_minimal() +
+    ggtitle("Frechet Q-Q Plot", subtitle = paste("R^2 =", round(myR2,3))) +
+    xlab("Theoretical") + ylab("Sample")
+  # 모수가 c랑 tau
+  mu<-myLM$coef[1]
+  sig<-myLM$coef[2]
+  mylst <- list(draw_qq=myplt, R2=myR2, c=exp(mu/sig), tau=1/sig)
+  return(mylst)
+}
+
+g4<-qq_frechet(accid)$draw_qq
+```
+
+
+#### 로그로지스틱
+
+
+```{r}
+qq_loglogis<-function(dat){
+  dat <- dat %>% mutate(p = cumsum(count)/(n+1),
+                        theo = log(p/(1-p)),
+                        samp = log(x))
+  myLM<-lm(samp~theo, data=dat)
+  myR2<-summary(myLM)$r.squared
+  myplt <- dat %>% ggplot(aes(theo, samp)) + geom_point(size = 2) +
+    geom_smooth(method = "lm", se=F, color = "royalblue") + theme_minimal() +
+    ggtitle("Log-logistic Q-Q Plot", subtitle = paste("R^2 =", round(myR2,3))) +
+    xlab("Theoretical") + ylab("Sample")
+  # 모수가 alpha랑 lambda
+  mu<-myLM$coef[1]
+  sig<-myLM$coef[2]
+  mylst <- list(draw_qq=myplt, R2=myR2, alpha=1/sig, lambda=exp(mu))
+  return(mylst)
+}
+
+g5<-qq_loglogis(accid)$draw_qq
+```
+
+#### 모형선택
+
+```{r}
+grid.arrange(g1,g2,g3,g4,g5,ncol=3)
+```
+
+```{r echo=FALSE}
+data.frame(dtn=c("Lognormal", "Pareto", "Weibull", "Frechet", "Log-logistic"),
+           r.squared=round(c(qq_lognorm(accid)$R2, qq_pareto(accid)$R2, qq_weibull(accid)$R2, qq_frechet(accid)$R2, qq_loglogis(accid)$R2),4)) %>%
+  t() %>% kable("html",align = "ccccc",row.names = F) %>% 
+  kable_styling(bootstrap_options = "bordered",full_width = F) %>%
+  row_spec(1,bold = T)
+```
+
+　히스토그램의 형태 및 Q-Q plot, $R^2$ 값으로 볼 때, **파레토 분포**와 **역와이블(프레셰)분포**가 가장 적합한 확률분포일 것으로 파악.       
+　따라서 이들 모형에 대한 모수를 저장.
+
+```{r}
+par_PRT<-list(alpha=qq_pareto(accid)$alpha, lambda=qq_pareto(accid)$lambda)
+par_FRCH<-list(c=qq_frechet(accid)$c, tau=qq_frechet(accid)$tau)
+
+par_PRT # 파레토 모수
+par_FRCH #역와이블(프레셰) 모수
+```
+
+
+### 3. 각 경우에 대한 적정 보험료 계산
+
+　-　자기부담금(`dedct`) A = 0, 10, 20 만원         
+　-　보상한도 B(`limt`) = 50, 100, 200, 500, 1000 만원
+
+　
+```{r}
+# 총 보상 건수 n(=8443), 총 계약 건수 271306
+TotalContract<-271306
+`E(N)`<-n/TotalContract
+#A, B 정의
+dedct<-c(0,10,20); limt<-c(50,100,200,500,1000)
+# 파레토 ----
+premium_pareto<-function(x,A,B,par=par_PRT){
+  alpha<-par$alpha; lamb<-par$lambda
+  x_pdf<-function(x){x*alpha*(lamb^alpha)*((lamb+x)^(-alpha-1))}
+  cdf<-function(x){1-(lamb/(lamb+x))^alpha}
+  `E(Y)`<-integrate(x_pdf,A,A+B)$value+B*(1-cdf(A+B))-A*(cdf(A+B)-cdf(A))
+  price<-`E(N)` * `E(Y)`
+  return(price*10000) #만원단위임
+}
+
+# 벡터로 저장
+P1<-c(); i<-1
+for(a in dedct){
+  for(b in limt){P1[i]<-premium_pareto(accid$x, a, b); i<-i+1}
+}
+
+# 프레셰 ----
+premium_frechet<-function(x,A,B,par=par_FRCH){
+  c<-par$c; tau<-par$tau
+  x_pdf<-function(x){c*tau*exp(-c/(x^tau))/(x^tau)}
+  cdf<-function(x){exp(-c/(x^tau))}
+  `E(Y)`<-integrate(x_pdf,A,A+B)$value+B*(1-cdf(A+B))-A*(cdf(A+B)-cdf(A))
+  price<-`E(N)` * `E(Y)`
+  return(price*10000) #만원단위임
+}
+
+# 벡터로 저장
+P2<-c(); i<-1
+for(a in dedct){
+  for(b in limt){P2[i]<-premium_frechet(accid$x, a, b); i<-i+1}
+}
+```
+
+**적정보험료를 계산하시오 답**
+
+```{r echo=FALSE}
+data.frame(Deductible=paste0(rep(c(0,10,20),each=5),"만 원"), Limit=paste0(limt,"만 원"),
+           P1_Pareto=paste0(format(round(P1,0),big.mark=","),"원"), 
+           P2_Frechet=paste0(format(round(P2,0),big.mark=","),"원")) %>%
+  kable("html", align = "rrrr") %>%
+  kable_styling(bootstrap_options = "basic", full_width = F, position = "center") %>%
+  row_spec(c(1:5,11:15), background = "#F1F1F1")
+```
+
+
+### 4. A=0, B=50 ⇨ 손해율 비교
+
+　-　만원단위로 다시 돌려놔야 함 (`/ 10000`)
+
+```{r}
+# P1(파레토) 손해율
+loss_P1<-100 * 259699 / (TotalContract * P1[1] / 10000)
+# P2(프레셰) 손해율
+loss_P2<-100 * 259699 / (TotalContract * P2[1] / 10000)
+```
+
+
+```{r echo=FALSE}
+data.frame(`기존`="305.8%", `P1_Pareto`=paste0(round(loss_P1,3),"%"), `P2_Frechet`=paste0(round(loss_P2,3),"%")) %>%
+  kable("html", align = "cccc") %>%
+  kable_styling(bootstrap_options = "striped",full_width = F, position = "center")
+```
+
+
+　-　손해율이 100% 정도로 됨 (정상이 됨. 적절한 보험료라고 볼 수 있음) 원래 받아야 하는 보험료의 1/3 정도밖에 못 받았던 거임
+
+
+### 5. 샤이니
+
+
+### 6. 자기부담금 고려해서 다시
+
+
+```{r message=FALSE, warning=FALSE}
+# 데이터 불러오기
+accid2<-read_excel("상해보험자료2.xls", col_names = c("x","count"),range = "A7:B51",
+                  sheet = "Table3-with-Deductible", col_types = c("numeric", "numeric"))
+head(accid2)
+accid3<-rbind(cbind(x=1:5,count=rep(0,5)),accid2)
+```
+
+
+#### (1) X의 분포 추정
+
+　위에서 했던 대로 Q-Q plot 이용
+
+```{r}
+n<-7404
+g11<-qq_lognorm(accid2)$draw_qq
+g22<-qq_pareto(accid2)$draw_qq
+g33<-qq_weibull(accid2)$draw_qq
+g44<-qq_frechet(accid2)$draw_qq
+g55<-qq_loglogis(accid2)$draw_qq
+grid.arrange(g11,g22,g33,g44,g55,ncol=3)
+```
+
+
+　⇒ 파레토로 결정
+
+```{r}
+par2<-list(alpha=1/qq_pareto(accid2)$alpha, lambda=qq_pareto(accid2)$lambda)
+#par3<-list(alpha=qq_pareto(accid3)$alpha, lambda=qq_pareto(accid3)$lambda)
+```
+
+
+　5만원 이하의 사고자료가 있을 때(#2) 추정했던 모수 추정값과 비교해보면 다음과 같음.
+
+
+```{r echo=FALSE}
+data.frame(cbind(`deductible X`=par_PRT,`deductible O`=par2)) %>%
+  kable("html", align = "rr") %>% kable_styling("striped") %>% column_spec(1,bold = T)
+```
+
+　알파, 람다 모두 자기부담금이 있는 경우 더 커졌음.
+
+
+
+
+#### (2) 5만원 이하의 사고 건수 & 총 사고 건수 MLE 추정
+
+　$L(m,\theta)=\frac{m!}{(m-f_0)!f_2! \cdot \cdot \cdot f_k!} \left( p_1(\theta) \right)^{m-f_0} \left( p_2(\theta) \right) ^{f_2} \cdot \cdot \cdot \left( p_k(\theta) \right) ^{f_k}$
+
+
+　⇒ 그렇다면 $l(m,\theta)=\ln{\frac{m!}{(m-f_0)!f_2! \cdot \cdot \cdot f_k!}} + (m-f_0) \ln{p_1(\theta)}+\Sigma_{i=2}^{k} f_i \cdot \ln(p_i(\theta))$
+
+```{r eval=FALSE, include=FALSE}
+mylnL<-function(par){
+  m<-par[1]; alpha<-par[2]; lambda<-par[3]
+  # fi는 빈도 (=count)
+  ## ?f1이랑 p1은 어떻게 처리하는지 모르겟음
+  fi<-c()
+  fi[2:46]<-accid2$count
+  fi[1]<-fi[2]
+  fi[47]<- m-sum(fi) #이게 fk
+  # pi(theta)는 cell probability => cdf의 차이로 계산
+  cdf<-function(x){1-(lambda/(lambda+x))^alpha}
+  cum<-cdf(accid2$x)
+  pi<-c(cum[1],cum[1],diff(cum))
+  pi[47]<-1-sum(pi[1:46])
+  #temp1<-log(lgamma(m+1))-sum(log(lgamma(fi+1)))
+  #temp1<-lgamma(m+1)-sum(lgamma(fi+1))
+  #temp2<-sum((fi)*log(pi))
+  #temp1<-log(lgamma(m+1))-log(prod(lgamma(f1+1),lgamma(fi+1)))
+  #temp2<-(f1)*log(p1)
+  #temp3<-sum(fi*log(pi))
+  #lnL<-temp1 + temp2
+  lnL<-(lgamma(m+1)/prod(lgamma(fi+1)))*prod(pi*fi)
+  return(-lnL)
+}
+
+myres<-optim(par=c(3863*2,par2$alpha, par2$lambda), mylnL)
+```
+
+
+
+```{r}
+mylnL<-function(par){
+  m<-par[1]; alpha<-par[2]; lambda<-par[3]
+  # f1 어떻게 해?
+  # fi는 빈도 (=count)
+  fi<-c()
+  fi[2:46]<-accid2$count
+  fi[1]<-fi[2]
+  fi[47]<- m-sum(fi) #이게 fk
+  # pi(theta)는 cell probability => cdf의 차이로 계산
+  cdf<-function(x){1-(lambda/(lambda+x))^alpha}
+  cum<-cdf(c(5,accid2$x))
+  pi<-c(cum[1],diff(cum))
+  pi[47]<-1-sum(pi[1:46])
+  lnL<-(lgamma(m+1)/prod(lgamma(fi+1)))*prod(pi*fi)
+  return(-lnL)
+}
+
+myres<-optim(par=c(7404,par2$alpha, par2$lambda), mylnL)
+
+myres$par
+```
+
+따라서 추정된 총 사고건수 $m$ = `r myres$par[1]` & 5만원 이하 사고 건수 $n_1$ = `r myres$par[1] - 7404`
+
+
+실제 $m=8443$, $n_1=1039$ 보다 underestimate됨
+
+
+```{r}
+# 근데 초기값 다르게 잡으면 비슷하게 나옴
+m2<-optim(par=c(3863*2,par2$alpha, par2$lambda), mylnL)$par[1]
+n2<-m2-7404
+c(m2,n2)
+```
+
+
+
+
+### +) 피드백 수정
+
+파레토 모수 추정 수정
+
+ver 1
+
+```{r}
+mylnL<-function(par){
+  m<-par[1]; alpha<-par[2]; lambda<-par[3]
+  # fi는 빈도 (=count)
+  ## ?f1이랑 p1은 어떻게 처리하는지 모르겟음
+  fi<-c()
+  fi[2:46]<-accid2$count 
+  fi[47]<-3541 #fk
+  fi[1]<- m-sum(fi[2:47]) #f1
+  # pi(theta)는 cell probability => cdf의 차이로 계산
+  cdf<-function(x){1-(lambda/(lambda+x))^alpha}
+  cum<-cdf(accid2$x)
+  pi<-c(cdf(5),cdf(6)-cdf(5),diff(cum))
+  pi[47]<-1-sum(pi)
+  lnL<-lgamma(m+1)+sum(fi*log(pi))-sum(lgamma(fi))
+  return(-lnL)
+}
+
+myres
+optim(par=c(8443,0.6, 88), mylnL,upper = c(8500,1,100), method = "BFGS")
+
+```
+
+
+
+
+
