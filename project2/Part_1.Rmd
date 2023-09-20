@@ -345,86 +345,16 @@ data.frame(cbind(`deductible X`=par_PRT,`deductible O`=par2)) %>%
 
 　⇒ 그렇다면 $l(m,\theta)=\ln{\frac{m!}{(m-f_0)!f_2! \cdot \cdot \cdot f_k!}} + (m-f_0) \ln{p_1(\theta)}+\Sigma_{i=2}^{k} f_i \cdot \ln(p_i(\theta))$
 
-```{r eval=FALSE, include=FALSE}
-mylnL<-function(par){
-  m<-par[1]; alpha<-par[2]; lambda<-par[3]
-  # fi는 빈도 (=count)
-  ## ?f1이랑 p1은 어떻게 처리하는지 모르겟음
-  fi<-c()
-  fi[2:46]<-accid2$count
-  fi[1]<-fi[2]
-  fi[47]<- m-sum(fi) #이게 fk
-  # pi(theta)는 cell probability => cdf의 차이로 계산
-  cdf<-function(x){1-(lambda/(lambda+x))^alpha}
-  cum<-cdf(accid2$x)
-  pi<-c(cum[1],cum[1],diff(cum))
-  pi[47]<-1-sum(pi[1:46])
-  #temp1<-log(lgamma(m+1))-sum(log(lgamma(fi+1)))
-  #temp1<-lgamma(m+1)-sum(lgamma(fi+1))
-  #temp2<-sum((fi)*log(pi))
-  #temp1<-log(lgamma(m+1))-log(prod(lgamma(f1+1),lgamma(fi+1)))
-  #temp2<-(f1)*log(p1)
-  #temp3<-sum(fi*log(pi))
-  #lnL<-temp1 + temp2
-  lnL<-(lgamma(m+1)/prod(lgamma(fi+1)))*prod(pi*fi)
-  return(-lnL)
-}
-
-myres<-optim(par=c(3863*2,par2$alpha, par2$lambda), mylnL)
-```
-
-
-
-```{r}
-mylnL<-function(par){
-  m<-par[1]; alpha<-par[2]; lambda<-par[3]
-  # f1 어떻게 해?
-  # fi는 빈도 (=count)
-  fi<-c()
-  fi[2:46]<-accid2$count
-  fi[1]<-fi[2]
-  fi[47]<- m-sum(fi) #이게 fk
-  # pi(theta)는 cell probability => cdf의 차이로 계산
-  cdf<-function(x){1-(lambda/(lambda+x))^alpha}
-  cum<-cdf(c(5,accid2$x))
-  pi<-c(cum[1],diff(cum))
-  pi[47]<-1-sum(pi[1:46])
-  lnL<-(lgamma(m+1)/prod(lgamma(fi+1)))*prod(pi*fi)
-  return(-lnL)
-}
-
-myres<-optim(par=c(7404,par2$alpha, par2$lambda), mylnL)
-
-myres$par
-```
-
-따라서 추정된 총 사고건수 $m$ = `r myres$par[1]` & 5만원 이하 사고 건수 $n_1$ = `r myres$par[1] - 7404`
-
-
-실제 $m=8443$, $n_1=1039$ 보다 underestimate됨
-
-
-```{r}
-# 근데 초기값 다르게 잡으면 비슷하게 나옴
-m2<-optim(par=c(3863*2,par2$alpha, par2$lambda), mylnL)$par[1]
-n2<-m2-7404
-c(m2,n2)
-```
-
-
-
 
 ### +) 피드백 수정
 
 파레토 모수 추정 수정
 
-ver 1
+MLE 수정
 
 ```{r}
 mylnL<-function(par){
   m<-par[1]; alpha<-par[2]; lambda<-par[3]
-  # fi는 빈도 (=count)
-  ## ?f1이랑 p1은 어떻게 처리하는지 모르겟음
   fi<-c()
   fi[2:46]<-accid2$count 
   fi[47]<-3541 #fk
@@ -438,12 +368,18 @@ mylnL<-function(par){
   return(-lnL)
 }
 
-myres
-optim(par=c(8443,0.6, 88), mylnL,upper = c(8500,1,100), method = "BFGS")
+# m 9263 정도, 알파 0.5 정도, 람다 9.04 정도 => 오차 크게 나오는 게 정상
+optim(par=c(8400,0.6, 20), mylnL, method = "Nelder-Mead")
 
 ```
 
 
++) QQ도 수정 필요
+
+ 1. lambda sequence에서 1단위보단 소수점을 넣던지 해야 함 (continuity 고려)
+
+ 2. 절단자료의 경우 n1도 모수 취급 => 중복 for 문 필요 (profile likelihood)
+    e.g. for (l in lambda sequence){ for (n in n1 sequence) R square df 채우기 } => 이 뒤에 which.max로 R^2 최대화
 
 
 
