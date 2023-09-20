@@ -1,0 +1,367 @@
+
+
+
+# Part 3.
+
+```{r, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(tidyverse)
+library(dplyr)
+library(jmuOutlier)
+library(gridExtra)
+library(kableExtra)
+
+options(scipen=999)
+```
+
+
+```{r}
+data3 <- read.csv("school_fire.csv")
+data3 <- data3[1:6,c(1:11,14)]
+names(data3) <- c("x","n08","n09","n10","n11","n12","n13","n14","n15","n16","n17","n1317")
+data3 <- data3 %>% mutate(x=as.numeric(x))
+n <- sum(data3$n1317)+2
+```
+
+
+## (a) 각 자료에 대해 log-Normal, log-Logistic, log-Laplace, log-Gumbel (Frechet), log-exponetial (Pareto) 등 분포의 Q-Q plot을 그려보고 가장 적합한 분포 2개를 찾고 그 모수를 추정하시오.
+
+```{r}
+qq.pareto1 <- function(x,y,lambda){
+  r = cumsum(y) 
+  pr <- r/(n+1)
+  lnxr <- -log(1-pr)
+  yr <- log(1+x/lambda)
+  fit <- lm(yr~lnxr)
+  return(summary(fit)$r.squared)
+}
+x <- data3$x
+y <- data3$n1317
+r2 <- c()
+lambda <- seq(1,120,1)
+for(i in lambda){
+  r2 <- c(r2,qq.pareto1(x, y, i))
+}
+
+lambda <- lambda[which.max(r2)]
+```
+
+
+```{r}
+x <- data3$x
+count <- data3$n1317
+pr <- cumsum(count)/(n+1)
+pareto <- -log(1-pr)
+y <- log(1+x/lambda)
+
+alpha <- 1/summary(lm(y~pareto-1))$coef[[1]]
+```
+
+
+```{r}
+#파레토 최종 QQplot 
+
+pareto.qq <- data3 %>% mutate(pr = cumsum(n1317)/(n+1),
+                           pareto = -log(1-pr)/alpha) %>%
+  ggplot(aes(x=pareto,y=log(1+x/lambda))) +
+  geom_point(size=2) + geom_smooth(method="lm", se=F) +
+  geom_smooth(method="lm", se=F) + ylab("Quantile")
+```
+
+```{r}
+#로그노말 QQplot 
+lognorm.qq <- data3 %>% mutate(pr=cumsum(n1317)/(n+1), lognormal = qnorm(pr))%>%
+  ggplot( aes(lognormal, log(as.numeric(data3$x)))) + geom_point(size=2) +
+  geom_smooth(method="lm", se=F) + ylab("Quantile")
+
+#로그라플라스 QQplot 
+loglap.qq <- data3 %>% 
+  mutate(pr=cumsum(n1317)/(n+1), loglaplace=qlaplace(pr)) %>%        ggplot(aes(loglaplace, log(x))) +geom_point(size=2) + 
+  geom_smooth(method="lm", se=F) + ylab("Quantile")
+
+#역와이블 QQplot (log-Gumbel, Frechet)
+iw.qq<- data3 %>% mutate(pr=cumsum(n1317)/(n+1), frechet=-log(-log(pr)))%>%
+  ggplot(aes(frechet, log(x))) + geom_point(size=2) + 
+  geom_smooth(method="lm", se=F) + ylab("Quantile")
+
+#로그로지스틱 QQplot 
+loglogi.qq <- data3 %>% 
+  mutate(loglogistic=log(cumsum(n1317)/(n+1-cumsum(count))))%>%
+  ggplot(aes(loglogistic, log(x))) + geom_point(size=2) +
+  geom_smooth(method="lm", se=F) + ylab("Quantile")
+```
+
+```{r}
+grid.arrange(lognorm.qq, pareto.qq, loglap.qq, iw.qq, loglogi.qq, ncol=3)
+```
+
+
+```{r}
+# R-squared 값 자세히 뽑아보기
+x <- data3$x
+count <- data3$n1317
+pr <- cumsum(count)/(n+1)
+
+loglaplace <- qlaplace(pr)
+i.weibull <- -log(-log(pr))
+lognormal <- qnorm(pr)
+loglogistic <- log(cumsum(count)/(n+1-cumsum(count)))
+
+r2.1 <- summary(lm(log(x)~loglaplace))$r.squared 
+r2.2 <- summary(lm(log(x)~i.weibull))$r.squared 
+r2.3 <- summary(lm(log(x)~loglogistic))$r.squared 
+r2.4 <- summary(lm(log(x)~lognormal))$r.squared 
+
+pareto <- -log(1-pr)/alpha 
+y <- log(1+x/lambda)
+r2.5 <- summary(lm(y~pareto-1))$r.squared 
+```
+
+```{r}
+lambda
+
+best_alpha <- 1/lm(y~pareto-1)$coefficients[[1]]
+best_alpha
+```
+
+
+```{r}
+#loglogistic & pareto 선택
+
+data.frame(
+  Dist = c("loglaplace","Frechet","loglogistic","lognormal","pareto"), 
+  R_square= round(c(r2.1,r2.2,r2.3,r2.4,r2.5),4) 
+  )
+```
+
+```{r}
+kable(data.frame(Dist = c("loglaplace","Frechet","loglogistic","lognormal","pareto"), 
+                 R_square= round(c(r2.1,r2.2,r2.3,r2.4,r2.5),3) ),align=c("rclcr")) %>% 
+  kable_styling(full_width=F, bootstrap_options = "bordered")
+```
+
+
+R-square가 가장 높은 pareto와 loglogistic 분포 선택
+
+```{r}
+# loglogistic 모수 (lambda, alpha)
+lambda1 <- estimator(data3$x,data3$n1317,"loglogistic")[[1]]
+alpha1 <- estimator(data3$x,data3$n1317,"loglogistic")[[2]]
+lambda1; alpha1
+```
+
+```{r}
+# pareto 모수
+lambda2 <- estimator(data3$x,data3$n1317,"pareto")[[1]]
+alpha2 <- estimator(data3$x,data3$n1317,"pareto")[[2]]
+lambda2; alpha2
+```
+
+```{r}
+# loglogistic 모수 (mu, sigma)
+summary(lm(log(x)~loglogistic))
+```
+
+
+
+## (b) 학교화재의 피해액에 대하여 log-normal 모형을 적용하여 화재 한건 당 평균피해액 E(X) 및 적정 학교 화재보험료를 산정하시오.
+
+```{r}
+estimator <- function(x,count,dist){
+  pr <- cumsum(count)/(n+1)
+  lognormal <- qnorm(pr)
+  pareto.y<-log(1+x/lambda)
+  pareto <- -log(1-pr)/alpha
+  weibull <- log(-log(1-pr))
+  i.weibull <- -log(-log(pr))
+  loglogistic <- log(cumsum(count)/(n+1-cumsum(count)))
+  
+  if(dist=="lognormal"){
+    model<-lm(log(x)~lognormal)
+    mu<-model$coef[[1]]
+    sigma<-model$coef[[2]]
+    result<- list(mu=mu,sigma=sigma)
+    
+  } else if(dist=="pareto"){
+    model<-lm(pareto.y~pareto)
+    result<-list(lambda=lambda,alpha=alpha) 
+    
+  } else if(dist=="weibull"){
+    model<-lm(log(x)~weibull)
+    tau <- w.coef(model$coef)[[1]]
+    c <- w.coef(model$coef)[[2]]
+    result <- list(tau=tau,c=c)
+    
+  } else if(dist=="i.weibull"){
+    model<-lm(log(x)~i.weibull)
+    tau <- iw.coef(model$coef)[[1]]
+    c <- iw.coef(model$coef)[[2]]
+    result <- list(tau=tau,c=c)
+    
+  } else {
+    model<-lm(log(x)~loglogistic)
+    lambda<-loglogi.coef(model$coef)[[1]]
+    alpha<-loglogi.coef(model$coef)[[2]]
+    result <- list(lambda=lambda,alpha=alpha)
+  }
+    
+    return(result) 
+}
+```
+
+
+```{r}
+total.school <- 21162
+
+En <- (sum(data3$n1317)+2)/(5*total.school)
+
+Ey.norm <- function(x,a,b){
+  mu <- round(estimator(data3$x,data3$n1317,"lognormal")[[1]],3)
+  sigma <- round(estimator(data3$x,data3$n1317,"lognormal")[[2]],3)
+  
+  f <- function(x) {dlnorm(x,mu,sigma)*x}
+  
+  Fab <- ifelse(b==Inf,0,plnorm(a+b,mu,sigma))
+  Fa <- plnorm(a,mu,sigma)
+  EX <- ifelse(b==Inf,integrate(f,a,a+b)$value+0*(1-Fab)-a*(Fab-Fa),
+             integrate(f,a,a+b)$value+b*(1-Fab)-a*(Fab-Fa))
+
+  return(EX)
+}
+```
+
+```{r}
+table3b <- data.frame(`한도` = c("inf",100000),
+           `평균사고심도` = c(Ey.norm(data3$x,0,Inf),Ey.norm(data3$x,0,100000)),
+           `보험료` = c(round(Ey.norm(data3$x,0,Inf)*En,3)*10000,round(Ey.norm(data3$x,0,100000)*En,3)*10000) ) 
+
+table3b
+```
+
+
+
+
+## (c) 2013-2017년 전체 학교수를 근거로 평균 화재발생빈도를 추정하고 a)에서 선택된 최적 모형 2개을 이용하여 보상한도가 1억/ 5억/10억 인 경우 적정 학교 화재보험료를 각각 산정하시오. 
+
+```{r}
+loglogi.coef <- function(coef){
+    mu <- coef[[1]]
+    sigma <- coef[[2]]
+    lambda <- exp(mu)
+    alpha <- 1/sigma
+    return(list(lambda=lambda,alpha=alpha))
+}
+
+d.loglogi <- function(x,lambda,alpha){
+  value <- 1-(1/(1+(x/lambda)^alpha))
+  return(value)
+}
+
+d.pareto <- function(x,lambda,alpha){
+  value <- 1-(lambda/(lambda+x))^alpha
+  return(value)
+}
+```
+
+```{r}
+# loglogistic 
+Ey.loglogi <- function(x,a,b){
+  lambda <- estimator(data3$x,data3$n1317,"loglogistic")[[1]]
+  alpha <- estimator(data3$x,data3$n1317,"loglogistic")[[2]]
+
+  f<-function(x) (alpha*x^(alpha-1)*lambda^(-alpha)/(1+(x/lambda)^alpha)^2)*x
+  Fab<-ifelse(b==Inf,0,d.loglogi(a+b,lambda,alpha))
+  Fa<-d.loglogi(a,lambda,alpha)
+  EX<-integrate(f,a,a+b)$value+b*(1-Fab)-a*(Fab-Fa)
+  return(EX)
+}
+```
+
+```{r}
+# pareto
+Ey.pareto <- function(x,a,b){
+  lamda <- estimator(data3$x,data3$n1317,"pareto")[[1]]
+  alpha <- round(estimator(data3$x,data3$n1317,"pareto")[[2]],3)
+  f <- function(x) {(alpha*(lamda^alpha)*((lamda+x)^(-alpha-1)))*x}
+  Fab <- d.pareto(a+b,lamda,alpha)
+  Fa <- d.pareto(a,lamda,alpha)
+  Ey <- integrate(f,a,a+b)$value+b*(1-Fab)-a*(Fab-Fa)
+  return(Ey)
+}
+```
+
+```{r}
+#loglogistic 
+df_price1 <- data.frame(`보상한도`= NA, `평균사고심도`= NA, `보험료`=NA )
+
+i<-1
+for(b in c(10000,50000,100000)){
+    Ey1 <- Ey.loglogi(data3$x,0,b)
+    price1 <- Ey1*En
+    df_price1[i,] <- c(b,round(Ey1,3), paste(format(round(price1,3)*10000,big.mark = ","),"원"))
+    i <- i+1
+}
+
+df_price1
+```
+
+```{r}
+# pareto 
+df_price2 <- data.frame(`보상한도`= NA, `평균사고심도`= NA, `보험료`=NA )
+
+i<-1
+for(b in c(10000,50000,100000)){
+    Ey2 <- Ey.pareto(data3$x,0,b)
+    price2 <- Ey2*En
+    df_price2[i,] <- c(b, round(Ey2,3), paste(format(round(price2,3)*10000,big.mark = ","),"원"))
+    i <- i+1
+}
+
+df_price2
+```
+
+
+## (d) 위에서 구한 보험료를 2008-2012년도에 적용했을 때 손해율을 구하고 결과의 의미 및 문제점을 검토하고 개선방안을 제시하시오.
+
+```{r}
+f.price <- function(demage,b,num){
+    price1 <- Ey.loglogi(data3$x,0,b)*En
+    price2 <- Ey.pareto(data3$x,0,b)*En
+    total.school <-num
+    result1 <- round(demage/(num*price1)*100,3)
+    result2 <- round(demage/(num*price2)*100,3)
+    
+    return(c(result1,result2))
+}
+
+demage <- c(176163,89734,139708,81843,115335)
+num <- c(19780,19893,19989,20366,20527)
+year <- seq(2008,2012,1)
+```
+
+
+```{r}
+loss_ratio <- data.frame(year = NA , `보상한도` = NA, `loglogistic_손해율`=NA, `Pareto_손해율` = NA)
+j <- 1
+for (i in 1:5){
+  for(b in c(10000,50000,100000)){
+      loss_ratio[j,] <- c(year[i] , b, paste(f.price(demage[i],b,num[[i]])[[1]],"%"),
+                     paste(f.price(demage[i],b,num[[i]])[[2]], "%"))
+      j <- j+1
+  }
+}
+
+loss_ratio
+```
+
+
+
+
+
+
+
+
+
+
+
+
