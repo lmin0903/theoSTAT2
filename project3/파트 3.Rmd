@@ -1,0 +1,112 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+# Part 3.
+
+```{r, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(tidyverse)
+library(dplyr)
+library(gridExtra)
+```
+
+
+```{r}
+# e : 기대여명
+# q : 1년 이내 사망할 확률
+# l : 생존자수
+# L : 정지인구
+# y : 총생존년수
+# d : 사망자수
+
+table <- read.csv('Part2_생명표_reduced.csv')
+colnames(table) <- c('age', 'e_m', 'e_f', 'q_m', 'q_f', 'l_m', 'l_f', 'L_m', 'L_f', 'y_m', 'y_f', 'd_m', 'd_f')
+
+head(table)
+```
+
+```{r}
+male_tb <- table %>% select('age', 'e_m', 'q_m', 'l_m', 'L_m', 'd_m')
+fem_tb <- table %>% select('age', 'e_f', 'q_f', 'l_f', 'L_f', 'd_f')
+```
+
+
+
+## (a) 보험금 현재가의 기대값 계산
+
+```{r}
+i <- 0.05    # 이자율
+
+df <- data.frame(age=seq(20, 65, by=5))
+r <- log(1+i)
+v <- exp(-r)
+
+male_tb <- male_tb %>% mutate(C = v^(age+1)*d_m, D = (v^age)*l_m, M = rev(cumsum(rev(C))), 
+                                  A = M/D, A_bar = A*(i/log(1+i)))
+
+fem_tb <- fem_tb %>% mutate(C = v^(age+1)*d_f, D = (v^age)*l_f, M = rev(cumsum(rev(C))), 
+                                  A = M/D, A_bar = A*(i/log(1+i)))
+```
+
+```{r}
+a_df <- inner_join(df, male_tb[c('age', 'A_bar')], by='age') %>% 
+        left_join(.,  fem_tb[c('age', 'A_bar')], by='age')
+
+colnames(a_df) <- c('age', 'male', 'female')
+a_df
+```
+
+
+
+## (b) 사망 시점까지 매월 초 일정보험료를 (T+1)회 연속 납부할 경우, 누적 보험료의 현재가의 기대값 계산
+
+```{r}
+m <- 12
+i_m <- m*exp(r/m) - m
+d_m <- m-m*exp(-r/m)
+
+male_tb <- male_tb %>% mutate(A_m = A*(0.05/i_m), a_m = (1-A_m)/(m*(1-exp(-r/m))))
+fem_tb <- fem_tb %>% mutate(A_m = A*(0.05/i_m), a_m = (1-A_m)/(m*(1-exp(-r/m))))
+
+b_df <- inner_join(df, male_tb[c('age', 'a_m')], by='age') %>% 
+        left_join(.,  fem_tb[c('age', 'a_m')], by='age')
+
+colnames(b_df) <- c('age', 'male', 'female')
+b_df 
+```
+
+
+
+## (c) 월초납 적정보험료 계산
+
+```{r}
+male_tb <- male_tb %>% mutate('premium(male)' = A_bar/ a_m * 100000000 * 1/12)
+fem_tb <- fem_tb %>% mutate('premium(female)' = A_bar/ a_m * 100000000 * 1/12)
+
+c_df <- inner_join(df, male_tb[c('age', 'premium(male)')], by='age') %>% 
+        left_join(.,  fem_tb[c('age', 'premium(female)')], by='age')
+
+colnames(c_df) <- c('age', 'male', 'female')
+round(c_df)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
