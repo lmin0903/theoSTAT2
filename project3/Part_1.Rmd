@@ -1,0 +1,144 @@
+---
+title: "[Part 1] 생명표 만들기"
+output:
+  html_document:
+    fig_height: 4
+    fig_width: 7
+    highlight: textmate
+    theme: cosmo
+    df_print: paged
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r include=FALSE}
+library(optimx)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(readxl)
+library(leaps)
+library(MASS)
+library(kableExtra)
+library(reshape2)
+```
+
+### 성별 데이터 조직
+
+```{r message=FALSE, warning=FALSE}
+setwd("~/Desktop/2023-2/이론통계학II/HW3")
+# 데이터 불러오기
+popl<-read_excel("2010년_연앙인구.xlsx", range = "C3:E103",
+                 col_names = c("total", "male","female")) %>% mutate(x=0:100)
+death<-read_excel("2010년_사망자수.xlsx", range = "C3:E103",
+                  col_names = c("total", "male","female")) %>% mutate(x=0:100)
+# 성별로 묶기 (x=0,1,..,99 => 일단 100세 이상 다 포함해서 해놓고 마지막에 자름)
+male<-data.frame(x=0:100, Px=popl$male, Dx=death$male)
+female<-data.frame(x=0:100, Px=popl$female, Dx=death$female)
+```
+
+
+### 남자
+
+```{r}
+options(scipen=99)
+
+# 0) 사망률, 1) 사망확률
+male<-male %>% mutate(mx = Dx/Px, 
+                      qx = mx/(1+mx/2))
+# 2) 생존자수
+male$lx<-c()
+male$lx[1]<-l0<-100000
+male$lx[2:101]<-l0*cumprod(1-male$qx)[1:100]
+# 3) 정지인구
+male$Lx<-c()
+for(i in 1:100){
+  male$Lx[i]<-(male$lx[i]+male$lx[i+1])/2
+}
+male$Lx[101]<-male$lx[101] #어차피 자를 거임
+# 4) 기대여명
+male$ex<-c()
+for(i in 1:101){
+  male$ex[i]<-sum(male$Lx[i:100])/male$lx[i]
+}
+# 100세 이상 자르기
+male<-male[1:100,]
+```
+
+### 여자
+
+```{r}
+# 0) 사망률, 1) 사망확률
+female<-female %>% mutate(mx = Dx/Px, 
+                          qx = mx/(1+mx/2))
+# 2) 생존자수
+female$lx<-c()
+female$lx[1]<-l0<-100000
+female$lx[2:101]<-l0*cumprod(1-female$qx)[1:100]
+# 3) 정지인구
+female$Lx<-c()
+for(i in 1:100){
+  female$Lx[i]<-(female$lx[i]+female$lx[i+1])/2
+}
+female$Lx[101]<-female$lx[101] #어차피 자를 거임
+# 4) 기대여명
+female$ex<-c()
+for(i in 1:101){
+  female$ex[i]<-sum(female$Lx[i:100])/female$lx[i]
+}
+# 100세 이상 자르기
+female<-female[1:100,]
+```
+
+### 생명표 출력
+
+```{r echo=FALSE}
+male0<-male %>% dplyr::select(lx,Lx,qx,ex) %>%
+  mutate(lx=round(lx,1), Lx=round(Lx,1), qx=round(qx,5),ex=round(ex,1))
+female0<-female %>% dplyr::select(lx,Lx,qx,ex) %>%
+  mutate(lx=round(lx,1), Lx=round(Lx,1), qx=round(qx,5),ex=round(ex,1))
+
+cbind(x=0:99, male0, female0) %>% 
+  kable("html", align = "ccccccccc",
+        col.names = c("각 세", "$l_x^0$(생존자수)", "$L_x^0$(정지인구)","$q_x^0$(사망확률)","$\\bar{e}_x^0$(기대여명)","$l_x^1$(생존자수)", "$L_x^1$(정지인구)","$q_x^1$(사망확률)","$\\bar{e}_x^1$(기대여명)")) %>%
+  kable_styling(bootstrap_options = "striped") %>%
+  column_spec(1,bold = T,border_right = T) %>%
+  column_spec(5, border_right = T) %>%
+  add_header_above(c(" "=1, "Male"=4, "Female"=4),bold = T)
+```
+
+### 인구피라미드
+
+```{r}
+for_plot<-data.frame(Age=0:100, Male=popl$male, Female=popl$female)
+for_plot<-for_plot %>% mutate(Male = -(Male)) %>% 
+  melt(id.vars = "Age", value.name = "Population", variable.name = "Gender")
+for_plot %>%
+  ggplot(aes(x=Age, y=Population, fill=Gender)) +
+  geom_bar(data=subset(for_plot, Gender=="Male"),stat="identity")+
+  geom_bar(data=subset(for_plot, Gender=="Female"),stat="identity") +
+  coord_flip() + theme_minimal()
+```
+
+
+너무 조잡해서 5세씩 묶어서도 해봄
+
+
+```{r echo=FALSE}
+for_plot2<-read_excel("2010년_연앙인구_5세별.xlsx", 
+                      range = "C2:E22", col_names = c("Age", "Male", "Female"))
+for_plot2$Age<-sub("세","",for_plot2$Age)
+for_plot2$Age[21]<-sub("이상","",for_plot2$Age[21])
+for_plot2$Age<-factor(for_plot2$Age, levels = for_plot2$Age)
+for_plot2<-for_plot2 %>% mutate(Male=-Male) %>%
+  melt(id.vars = "Age", value.name = "Population", variable.name = "Gender")
+for_plot2 %>%
+  ggplot(aes(x=Age, y=Population, fill=Gender)) +
+  geom_bar(data=subset(for_plot2, Gender=="Male"),stat="identity")+
+  geom_bar(data=subset(for_plot2, Gender=="Female"),stat="identity") +
+  coord_flip() + theme_minimal()
+```
+
+
+
