@@ -1,0 +1,256 @@
+---
+title: "이론통계학2 Project#4"
+author: "232STG13 서민지"
+date: "2023-09-27"
+output: html_document
+---
+
+```{r include=FALSE}
+setwd("C:/Temp")
+library(tidyverse)
+library(gridExtra)
+library(ggpubr)
+library(jmuOutlier)
+```
+## 1)
+```{r}
+kospi <- read.csv("data_1519_20230927.csv", header=T, fileEncoding = "euckr")
+kospi$일자 <- as.Date(kospi$일자)
+kospi <- kospi %>% arrange(일자)
+head(kospi)
+
+maturity <- c(1/12, 3/12, 6/12, 9/12, 1)
+K <- kospi[kospi$일자=="2021-12-30",]$종가
+S0 <- kospi[kospi$일자=="2022-01-03",]$시가 #2022-01-02는 일요일이라 주식시장 열리지 않음
+c(K,S0)
+
+
+kospi2021 <- kospi %>% filter(일자 <= "2021-12-31") %>% select(일자, 종가) %>% mutate(date= 일자, t = rank(일자)-1, St = 종가, lnSt = log(St), dSt = c(diff(St), NA)) %>% select(-c(일자, 종가)) # t = 0,1,...,248, n = 249
+head(kospi2021) #2020-12-30이 t=0
+tail(kospi2021)
+
+ggplot(kospi2021)+geom_line(aes(x=t, y=St), color="blue")+theme_minimal()+labs(x="time", y=expression(S[t]), title="2021 S(t) (일별 종가)")
+
+ggplot(kospi2021)+geom_line(aes(x=t, y=lnSt), color="blue")+theme_minimal()+labs(x="time", y=expression(lnS[t]), title="2021 lnS(t) (일별 로그종가)")
+```
+
+## 2)
+```{r}
+kospi2021 <- kospi2021 %>% mutate(ut = dSt/St, ut.star = c(diff(lnSt), NA)) %>% filter(t <= 247) # t=0,...,247(n-1)
+
+ggplot(kospi2021) + geom_line(aes(x=t, y=ut), color="blue")+theme_minimal()+labs(x="time", y=expression(u[t]), title="2021 u(t) (일별수익률) timeseries plot")
+
+ggplot(kospi2021) + geom_histogram(aes(ut),bins=30)+theme_minimal()+labs(x=NULL, y=expression(u[t]), title="2021 u(t) (일별수익률) histogram")
+```
+$u_t$ 히스토그램을 그려보았을 때 0 부근에서 peak를 갖고 symmetric하게 떨어지는 bell-shaped인 것으로 보아 정규분포나 꼬리가 두꺼운 t분포를 따르는 것으로 예상된다.
+
+
+### a) ut에 대한 가장 적절한 분포를 찾고 정규성가정이 적절한지 검토
+```{r fig.height=10, fig.width=10, message=FALSE, warning=FALSE}
+kospi2021 <- kospi2021 %>% mutate(p = rank(ut)/(nrow(kospi2021)+1), normal=qnorm(p), logis=qlogis(p), laplace=qlaplace(p))
+
+qq.normal <- ggplot(kospi2021, aes(normal,ut)) + geom_point() + geom_smooth(method="lm", se=F) + stat_regline_equation(aes(label = ..rr.label..)) + ggtitle("normal Q-Q plot")
+
+qq.logis <- ggplot(kospi2021, aes(logis,ut)) + geom_point() + geom_smooth(method="lm", se=F) + stat_regline_equation(aes(label = ..rr.label..)) + ggtitle("logistic Q-Q plot")
+
+qq.laplace <- ggplot(kospi2021, aes(laplace,ut)) + geom_point() + geom_smooth(method="lm", se=F) + stat_regline_equation(aes(label = ..rr.label..)) + ggtitle("laplace Q-Q plot")
+
+qq <- list(qq.normal, qq.logis, qq.laplace)
+
+for(i in 1:10){
+  qq.plot <- kospi2021 %>% mutate(p = rank(ut)/(nrow(kospi2021)+1), q=qt(p, df=i)) %>% ggplot(aes(q,ut)) + geom_point() + geom_smooth(method="lm", se=F) + stat_regline_equation(aes(label = ..rr.label..)) + ggtitle(paste0("t-dist Q-Q plot (df = ",i,")"))
+  qq[[3+i]] <- qq.plot
+}
+
+grid.arrange(grobs=qq, ncol=4)
+```
+자유도가 1인 t분포를 제외하면 $R^2$가 모두 90% 이상이라는 것을 확인할 수 있다. 그 중 $R^2$가 1에 가까운 분포는 자유도가 각각 5, 6인 t 분포였다. normal Q-Q plot을 살펴봤을 때 $R^2$가 0.98이지만, 평균에서 떨어진 부분의 산점도가 qq-line에서 벗어난 모습을 통해 정규성 가정을 만족했다고 보기 어렵다. 
+
+### b) ut, ut.star의 평균 및 분산을 각각 구하여 Ito 변환공식을 만족하는지 검토
+```{r message=FALSE}
+options(scipen = 500)
+
+mu.ut <- mean(kospi2021$ut)
+var.ut <- var(kospi2021$ut)
+round(c(mu.ut, var.ut),5)
+
+mu.ut.star <- mean(kospi2021$ut.star)
+var.ut.star <- var(kospi2021$ut.star)
+round(c(mu.ut.star, var.ut.star),5)
+
+mu.ito <- mu.ut - var.ut/2
+var.ito <- var.ut
+round(c(mu.ito, var.ito),5)
+#직접 대입해서 구한 평균 및 분산과 ut.star로 구한 평균 및 분산이 동일한 것으로 보아 Ito 변환공식을 만족한다고 할 수 있다.
+
+g1 <- kospi2021 %>% mutate(p = rank(ut)/(nrow(kospi2021)+1), q=qt(p, df=5)) %>% ggplot(aes(q,ut)) + geom_point() + geom_smooth(method="lm", se=F) + stat_regline_equation(aes(label = ..rr.label..)) + ggtitle("t-dist Q-Q plot (df = 5) of ut")
+g2 <- kospi2021 %>% mutate(p = rank(ut.star)/(nrow(kospi2021)+1), q=qt(p, df=5)) %>% ggplot(aes(q,ut.star)) + geom_point() + geom_smooth(method="lm", se=F) + stat_regline_equation(aes(label = ..rr.label..)) + ggtitle("t-dist Q-Q plot (df = 5) of ut.star")
+grid.arrange(g1,g2,ncol=1)
+```
+
+### c)
+```{r}
+alpha <- c(0.05, 0.01)
+
+# normal dist
+norm.df <- kospi2021 %>% mutate(p = rank(ut)/(nrow(kospi2021)+1), q=qnorm(p))
+lm.norm <- lm(ut~q, data=norm.df)
+norm <- qnorm(alpha)*lm.norm$coef[[2]] + lm.norm$coef[[1]]
+
+# t-dist(df=5)
+t.df <- kospi2021 %>% mutate(p = rank(ut)/(nrow(kospi2021)+1), q=qt(p, df=5))
+lm.t <- lm(ut~q, data=t.df)
+t5 <- qt(alpha, df=5)*lm.t$coef[[2]] + lm.t$coef[[1]]
+
+# t-dist(df=6)
+t.df <- kospi2021 %>% mutate(p = rank(ut)/(nrow(kospi2021)+1), q=qt(p, df=6))
+lm.t <- lm(ut~q, data=t.df)
+t6 <- qt(alpha, df=6)*lm.t$coef[[2]] + lm.t$coef[[1]]
+
+(ut.VaR <- round(cbind(alpha, norm, t5, t6),3))
+```
+VaR(Value at Risk)가 $\alpha$가 0.05일 때는 -1.7%로 동일하고, 0.01일 때는 자유도가 5, 6인 t분포가 각각 -2.8%, -2.7%로, -2.4%인 정규분포보다 절대값이 약간 더 크지만 거의 유사하다고 볼 수 있다.
+
+### d)
+```{r message=FALSE}
+kospi.d <- kospi %>% filter(일자 <= "2021-12-31") %>% select(일자, 종가) %>% mutate(date= 일자, t = order(일자)-1, St = 종가, lnSt = log(St)) %>% select(-c(일자, 종가)) %>% arrange(date)
+
+#주별수익률
+vt <- kospi.d %>% filter(t%%5==0) %>% transform(vt = c(diff(St), NA)/St) %>% select(vt) %>% na.omit() #49, 1
+
+#월별수익률
+wt <- kospi.d %>% filter(t%%21==0) %>% transform(wt = c(diff(St), NA)/St) %>% select(wt) %>% na.omit() #11, 1
+
+#Q-Q plot 그리기
+qq.plot <- function(data, x, start=1, end=10){
+  qq.normal <- data %>% mutate(p = rank(get(x))/(nrow(data)+1), q=qnorm(p)) %>% ggplot(aes(q,get(x))) + geom_point() + geom_smooth(method="lm", se=F) + stat_regline_equation(aes(label = ..rr.label..)) + labs(y=x, title = "normal Q-Q plot")
+
+  qq.logis <- data %>% mutate(p = rank(get(x))/(nrow(data)+1), q=qlogis(p)) %>% ggplot(aes(q,get(x))) + geom_point() + geom_smooth(method="lm", se=F) + stat_regline_equation(aes(label = ..rr.label..)) + labs(y=x, title = "logistic Q-Q plot")
+
+  qq.laplace <- data %>% mutate(p = rank(get(x))/(nrow(data)+1), q=qlaplace(p)) %>% ggplot(aes(q,get(x))) + geom_point() + geom_smooth(method="lm", se=F) + stat_regline_equation(aes(label = ..rr.label..)) + labs(y=x, title = "laplace Q-Q plot")
+   
+  plot <- list(qq.normal, qq.logis, qq.laplace)
+  
+  # t.df = round(fitdistr(c(data[x])[[1]], "t")$estimate["df"])
+  
+  for(i in start:end){
+    t.df = i
+    qq.t <- data %>% mutate(p = rank(get(x))/(nrow(data)+1), q=qt(p, df=t.df)) %>% ggplot(aes(q,get(x))) + geom_point() + geom_smooth(method="lm", se=F) + stat_regline_equation(aes(label = ..rr.label..)) + labs(y=x, title = paste0("t Q-Q plot, df = ",t.df))
+    plot[[3+which(seq(start, end)==i)]] <- qq.t
+  }
+  
+  return(plot)
+}
+
+grid.arrange(grobs=qq.plot(vt, "vt", 1, 6)) #t dist df=2, 3
+grid.arrange(grobs=qq.plot(wt, "wt", 1, 6)) #t dist df=1
+
+
+VaR <- function(x, f, alpha=c(0.05, 0.01), par=NA, ...){
+  if(sum(is.na(par))>0){
+    data <- data.frame(x=x) %>% mutate(p=rank(x)/(length(x)+1), q=f(p,...))
+    lm.fit <- lm(x ~ q, data=data)
+    res <- f(alpha, ...)*lm.fit$coef[[2]] + lm.fit$coef[[1]]
+  }
+  else{
+    res <- f(alpha, ...)*par[2] + par[1]
+  }
+  return(res)
+}
+
+
+vt.VaR <- round(cbind(alpha=c(0.05, 0.01), norm1 = VaR(vt$vt, qnorm), norm2 = VaR(vt$vt, qnorm, par=c(mean(vt$vt), sd(vt$vt)))),3)
+wt.VaR <- round(cbind(alpha=c(0.05, 0.01), norm1 = VaR(wt$wt, qnorm), norm2 = VaR(wt$wt, qnorm, par=c(mean(wt$wt), sd(wt$wt)))),3)
+
+ut.VaR
+vt.VaR
+wt.VaR
+
+
+# t-dist(df=2,3)
+alpha=c(0.05, 0.01)
+vt.t.df <- data.frame(vt) %>% mutate(p = rank(vt)/(length(vt)+1), q2=qt(p, df=2), q3=qt(p, df=3))
+lm.vt.t2 <- lm(vt~q2, data=vt.t.df)
+vt.t2 <- qt(alpha, df=2)*lm.vt.t2$coef[[2]] + lm.vt.t2$coef[[1]]
+lm.vt.t3 <- lm(vt~q3, data=vt.t.df)
+vt.t3 <- qt(alpha, df=3)*lm.vt.t3$coef[[2]] + lm.vt.t3$coef[[1]]
+vt.VaR <- round(cbind(alpha, vt.t2, vt.t3),3)
+
+# t-dist(df=1)
+wt.t.df <- data.frame(wt) %>% mutate(p = rank(wt)/(length(wt)+1), q1=qt(p, df=1), qlap = qlaplace(p), norm = qnorm(p))
+lm.wt.t1 <- lm(wt~q1, data=wt.t.df)
+wt.t1 <- qt(alpha, df=1)*lm.wt.t1$coef[[2]] + lm.wt.t1$coef[[1]]
+
+lm.wt.lap <- lm(wt~qlap, data=wt.t.df)
+wt.lap <- qlaplace(alpha)*lm.wt.lap$coef[[2]] + lm.wt.lap$coef[[1]]
+
+lm.wt.norm <- lm(wt~norm, data=wt.t.df)
+wt.norm <- qnorm(alpha)*lm.wt.norm$coef[[2]] + lm.wt.norm$coef[[1]]
+
+wt.VaR <- round(cbind(alpha, wt.t1, wt.lap, wt.norm),3)
+
+#ut, vt, wt VaR 비교
+ut.VaR
+vt.VaR
+wt.VaR
+```
+
+### e) lnS(t)의 random walk 가설 성립 여부 확인
+```{r fig.height=5, fig.width=15}
+diff.same <- function(x, lag){
+  x <- x[seq(1,length(x),lag)]
+  res <- diff(x)
+  return(res)
+}
+
+d1 <- var(diff.same(kospi.d$lnSt, 1))
+d5 <- var(diff.same(kospi.d$lnSt, 5))
+d10 <- var(diff.same(kospi.d$lnSt, 10))
+d15 <- var(diff.same(kospi.d$lnSt, 15))
+d20 <- var(diff.same(kospi.d$lnSt, 20))
+d25 <- var(diff.same(kospi.d$lnSt, 25))
+
+
+rw.res <- data.frame(d = c(1,5*c(1:5)), var = c(d1, d5, d10, d15, d20, d25))
+rw.res
+
+g1 <- ggplot(rw.res, aes(d, var)) + geom_point() + geom_abline(slope = rw.res[1,2], intercept = 0, col="blue")
+g2 <- ggplot(rw.res, aes(sqrt(d), sqrt(var))) + geom_point() + geom_abline(slope = sqrt(rw.res[1,2]), intercept = 0, col="blue")
+g3 <- ggplot(rw.res, aes(log(d), log(var))) + geom_point() + geom_abline(slope = 1, intercept = log(rw.res[1,2]), col="blue")
+grid.arrange(g1, g2, g3, nrow=1)
+```
+d=20일 때의 var가 다른 점들에 비해 추세에서 떨어져 있지만, log를 취했을 때 어느 정도 가까이 위치하는 것으로 보아 lnSt가 random walk를 따른다고 볼 수 있다.
+
+## 3) ut의 자기상관계수 도표를 그리고 ut의 독립성가정 검토
+```{r}
+ut <- kospi2021$ut
+acf(ut)
+```
+$\rho_k$($k=1,2,3...$) 값들이 모두 점선 CI 내부에 위치하므로 $u_t$가 독립성가정을 만족한다고 할 수 있다.
+
+## 4) 순간무위험이자율 r 및 mu, Volality sigma 추정
+```{r}
+r <- log(1.05)
+u.bar <- mean(kospi2021$ut.star)
+s <- sd(kospi2021$ut.star)
+sigma.hat <- s/sqrt(1/248)
+mu.hat <- (u.bar + s^2/2)/(1/248)
+c(r, mu.hat, sigma.hat)
+```
+
+## 5) Geometric Brownain Motion Process
+```{r}
+n2022 <- 246 # 2022년 개시일
+t <- c(1:n2022)/n2022
+st.hat <- S0*exp((mu.hat-sigma.hat^2/2)*t)
+st.hat.upper <- S0*exp((mu.hat-sigma.hat^2/2)*t+1.96*sigma.hat*sqrt(t))
+st.hat.lower <- S0*exp((mu.hat-sigma.hat^2/2)*t-1.96*sigma.hat*sqrt(t))
+
+st2022 <- cbind(st.hat, st.hat.upper, st.hat.lower)
+
+kospi2022 <- kospi %>% select(일자, 종가) %>% mutate(date = 일자, St = 종가) %>% select(-c(일자, 종가)) %>% filter(date >= "2022-01-01") %>% arrange(date)
+kospi2022 <- cbind(kospi2022[c("date","St")], st2022)
+
+ggplot(kospi2022) + geom_line(aes(date, St)) + geom_line(aes(date, st.hat), col="red") + geom_line(aes(date, st.hat.lower), col="blue", lty=2) + geom_line(aes(date, st.hat.upper), col="blue", lty=2)
+```
+
