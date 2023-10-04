@@ -1,0 +1,167 @@
+---
+title: "[Part 2] Option Price 계산"
+output:
+  html_document:
+    fig_height: 4
+    fig_width: 7
+    highlight: textmate
+    theme: cosmo
+    df_print: paged
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r include=FALSE}
+library(optimx)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(readxl)
+library(leaps)
+library(MASS)
+library(kableExtra)
+library(reshape2)
+library(lubridate)
+```
+
+### 파트1 - 시그마 계산
+
+```{r message=FALSE, warning=FALSE}
+setwd("~/Desktop/2023-2/이론통계학II/HW4")
+# 데이터 불러오기
+kospi <- read_csv("kospi.csv", col_types = cols(대비 = col_skip(), 등락률 = col_skip(), 
+                                                고가 = col_skip(), 저가 = col_skip(), 
+                                                거래량 = col_skip(), 거래대금 = col_skip(),
+                                                상장시가총액 = col_skip(), 
+                                                일자 = col_date(format = "%Y-%m-%d")))
+names(kospi)<-c("date", "St", "start")
+
+# Part 1 - 4번 : 2021 자료에서 시그마 추정
+kospi2021 <- kospi %>% filter(year(date)=="2021"); n<-nrow(kospi2021)
+kospi2021 <- kospi2021 %>% mutate(lnSt = log(St), u=c(diff(lnSt),NA))
+kospi2021 <- kospi2021[1:(n-1),] 
+
+myR<-r<-log(1.05)
+u.bar<-mean(kospi2021$u); s<-sd(kospi2021$u)
+mySig<-s/sqrt(1/n); mu<-(u.bar+0.5*s^2)/(1/n)
+```
+
+
+### 1) MC simulation vs. Black-Scholes-Merton
+
+```{r}
+myK<-kospi %>% filter(year(date)=="2021") %>% tail(1) %>% dplyr::select(St) %>% as.numeric
+myS0<-kospi %>% filter(year(date)=="2022") %>% head(1) %>% dplyr::select(start) %>% as.numeric
+myT<-c(1/12,1/4, 1/2, 3/4, 1)
+
+#MC simulation
+##temp11 : mc call option price
+##temp12 : mc put option price
+temp11<-temp12<-c()
+
+myMC<-function(S0=myS0,r=myR,sigma=mySig,t,K=myK,M=1000000){
+  z<-rnorm(M)
+  st<-S0*exp((r-0.5*sigma^2)*t+sigma*sqrt(t)*z)
+  st.call<-sapply(st-K, max, 0)
+  st.put<-sapply(K-st, max, 0)
+  ct<-exp(-r*t)*sum(st.call)/M
+  pt<-exp(-r*t)*sum(st.put)/M
+  return(list(call=ct, put=pt))
+}
+
+set.seed(123)
+for(i in 1:5){
+  res<-myMC(t=myT[i])
+  temp11[i]<-res$call
+  temp12[i]<-res$put
+}
+
+#Black-Scholes-Merton
+##temp21 : bsm call option price
+##temp22 : bsm put option price
+temp21<-temp22<-c()
+
+myBSM<-function(S0=myS0,r=myR,sigma=mySig,t,K=myK){
+  d1<-(log(S0/K)+(r+0.5*sigma^2)*t)/(sigma*sqrt(t))
+  d2<-d1-sigma*sqrt(t)
+  ct<-exp(-r*t)*(S0*exp(r*t)*pnorm(d1)-K*pnorm(d2))
+  pt<-exp(-r*t)*(-S0*exp(r*t)*pnorm(-d1)+K*pnorm(-d2))
+  return(list(call=ct, put=pt))
+}
+
+for(i in 1:5){
+  res<-myBSM(t=myT[i])
+  temp21[i]<-res$call
+  temp22[i]<-res$put
+}
+```
+
+비교 : 두 방법 거의 똑같음
+
+```{r echo=FALSE}
+c("1/12","1/4","1/2","3/4",1) %>%
+  cbind(round(cbind(temp11, temp12, temp21, temp22),2)) %>%
+  kable(format = "html", align = "cccc",col.names = c("t","call", "put", "call", "put")) %>%
+  kable_styling(bootstrap_options = "striped") %>%
+  column_spec(1,bold = T) %>% add_header_above(c("","Monte-Carlo"=2, "Black-Scholes-Merton"=2))
+```
+
+
+
+
+### 2) 만기별 실제 수익률 vs. 주식 수익률
+
+```{r}
+# 실제 수익율 계산용 St
+mySt<-c()
+for(i in 1:5){
+  temp<-c(1,3,6,9,12)
+  mySt[i]<-kospi %>% filter(year(date)=="2022", month(date)==temp[i]) %>% tail(1) %>% dplyr::select(St) %>% as.numeric
+}
+
+# portfolio 함수
+myPortfolio<-function(n.call, n.put, t=myT, ct=temp21, pt=temp22, K=myK, S0=myS0, St=mySt){
+  #call<-put<-r.call<-r.put<-net.profit<-rate1<-rate2<-c()
+  call<-n.call*ct
+  put<-n.put*pt
+  r.call<-n.call*sapply(St-K, max, 0)
+  r.put<-n.put*sapply(K-St, max, 0)
+  net.profit<-(r.call+r.put)-(call+put)
+  rate1<-100*net.profit/(call+put)
+  rate2<-100*(St-S0)/S0
+  return(cbind(c(1,3,6,9,12),call,put,r.call,r.put,net.profit,rate1,rate2))
+}
+
+portfolioA<-myPortfolio(150,50)
+portfolioB<-myPortfolio(100,100)
+portfolioC<-myPortfolio(50,150)
+```
+
+
+포트폴리오 a)
+
+```{r echo=FALSE}
+cbind(paste0(c(1,3,6,9,12),"월 말"),round(portfolioA[,-1],2)) %>% kable("html", align = "ccccc", col.names = c("만기","150*cₜ","50*pₜ", "150*(St-k)+", "50*(K-St)+", "순수입", "수익률(%)", "코스피 수익률(%)")) %>%
+  kable_styling(bootstrap_options = "striped") %>%
+  column_spec(1,bold = T)
+```
+
+포트폴리오 b)
+
+```{r echo=FALSE}
+cbind(paste0(c(1,3,6,9,12),"월 말"),round(portfolioB[,-1],2)) %>% kable("html", align = "ccccc", col.names = c("만기","150*cₜ","50*pₜ", "150*(St-k)+", "50*(K-St)+", "순수입", "수익률(%)", "코스피 수익률(%)")) %>%
+  kable_styling(bootstrap_options = "striped") %>%
+  column_spec(1,bold = T)
+```
+
+포트폴리오 c)
+
+```{r echo=FALSE}
+cbind(paste0(c(1,3,6,9,12),"월 말"),round(portfolioC[,-1],2)) %>% kable("html", align = "ccccc", col.names = c("만기","150*cₜ","50*pₜ", "150*(St-k)+", "50*(K-St)+", "순수입", "수익률(%)", "코스피 수익률(%)")) %>%
+  kable_styling(bootstrap_options = "striped") %>%
+  column_spec(1,bold = T)
+```
+
+
+
