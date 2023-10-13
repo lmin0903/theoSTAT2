@@ -1,0 +1,209 @@
+
+
+# Part 3.
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(gridExtra)
+library(reshape)
+library(kableExtra)
+library(NormalLaplace)
+library(dplyr)
+```
+
+```{r}
+# 월별 금리  
+data <- read.csv("유통수익률.csv")
+
+# 종가 데이터
+samsung <- read.csv("samsung.csv")
+ktag <- read.csv("KT_G.csv")
+kakao <- read.csv("kakao.csv")
+naver <- read.csv("naver.csv")
+kogas <- read.csv("kogas.csv")
+
+samsung <- samsung[,c(1,5)]
+ktag <- ktag[,c(1,5)]
+kakao <- kakao[,c(1,5)]
+naver <- naver[,c(1,5)]
+kogas <- kogas[,c(1,5)]
+data$Date <- format(as.Date(data$Date), format = "%Y/%m")
+samsung$Date <- format(as.Date(samsung$Date),format = "%Y/%m")
+ktag$Date <- format(as.Date(ktag$Date),format = "%Y/%m")
+kakao$Date <- format(as.Date(kakao$Date),format = "%Y/%m")
+naver$Date <- format(as.Date(naver$Date),format = "%Y/%m")
+kogas$Date <- format(as.Date(kogas$Date),format = "%Y/%m")
+```
+
+```{r}
+df <- samsung %>% select("Date","Close") %>% merge(ktag,by = "Date", suffixes = c("_samsung","_kt")) %>% 
+     merge(kakao,by = "Date")  %>%
+     merge(naver,by = "Date", suffixes = c("_kakao","_naver")) %>%
+     merge(kogas,by = "Date") %>%
+     merge(data,by="Date") %>% arrange("Date") 
+df <- df %>% rename('Close_gas' = 'Close') 
+
+data <- df %>% mutate(t = seq(0,nrow(df)-1,1),
+                 samsung = (Close_samsung-lag(Close_samsung))/lag(Close_samsung), 
+                 KTaG = (Close_kt-lag(Close_kt))/lag(Close_kt),
+                 kakao = (Close_kakao-lag(Close_kakao))/lag(Close_kakao),
+                 naver = (Close_naver-lag(Close_naver))/lag(Close_naver),
+                 gas = (Close_gas-lag(Close_gas))/lag(Close_gas),
+                 deposit = (it*0.01+1)^(1/12)-1 
+                 ) %>% na.omit() %>%
+               select(-it,-contains("Close"),-Date) %>% select(t,deposit,everything())
+
+head(data)
+```
+
+## (a) 목표수익률에 대한 Sharpe Ratio 를 극대화하는 최적포트폴리오를 구하라
+
+```{r}
+N <- 5
+n <- 12*N
+train <- data[1:n,] 
+test <- data[n+1:n,] 
+train <- data.matrix(train[-1])
+test <- data.matrix(test[-1])
+
+# i : 목표 연평균 수익률
+# r.star : 목표 월평균 수익률
+shape.ratio <- function(theta, r, i){ 
+    theta <- c(1-sum(theta), theta) 
+    theta <- matrix(theta, nrow=nrow(r), ncol=length(theta), byrow = T)
+    rp <- rowSums(r*theta)
+    rp.bar <- mean(rp)
+    sp <- sd(rp)
+    r.star <- (1+i)^(1/12)-1
+    
+    Z <- (rp.bar-r.star)/sp
+    return(Z)
+} 
+
+cal.theta <- function(train, i, a=NULL, b=NULL){
+  j <- ncol(train)-1
+  ui <- rbind(rep(-1, j), diag(j)) 
+  ci <- c(-1, rep(0, j))
+  ui <- rbind(ui, a)
+  ci <- c(ci, b)
+  ci2 <- ci+0.1
+  theta0 <- c(MASS::ginv(ui)%*%ci2)
+  
+  # optim
+  res <- constrOptim(theta = theta0, f=shape.ratio, grad=NULL, ui=ui, ci=ci, r=train, i=i, control = list(fnscale = -1))
+  
+  return(res$par)
+}
+
+outputs <- function(train,test,theta,i,v0=1){
+    
+    r.star <- (1+i)^(1/12)-1
+    n1 <- nrow(train)
+    n2 <- nrow(test)
+    theta <- c(1-sum(theta), theta)   
+    
+    mat1 <- matrix(theta, nrow=n1, ncol=length(theta), byrow = T)
+    mat2 <- matrix(theta, nrow=n2, ncol=length(theta), byrow = T)
+    
+    rpt <- rowSums(train*mat1)
+    rpt.star <- rowSums(test*mat2)
+    rp.bar <- mean(rpt)
+    sp <- sd(rpt)
+    z <- (rp.bar-r.star)/sp
+    
+    ex.mean <- 12*rp.bar                   # 연평균 기대수익률
+    ex.sd <- sqrt(12)*sp                   # 기대 연 표준편차
+    real.mean <- mean(rpt.star)*12         # 연 평균 실제수익률
+    real.sd <- sd(rpt.star)*sqrt(12)       # 실제 연 표준편차
+    
+    vt <- v0*cumprod(1+rpt)
+    vt.star <- v0*cumprod(1+rpt.star)
+    result <- list(theta = theta,
+                   sharpe = z %>% round(3),
+                   month = c(rp.bar,sp) %>% round(3), 
+                   expected = c(ex.mean,ex.sd) %>% round(3),
+                   realized = c(real.mean,real.sd) %>% round(3),
+                   vt = data.frame(t = seq(1,60,1) ,vt=vt, vt.star=vt.star))
+    
+    return(result)
+} 
+```
+
+```{r}
+i <- 0.05
+theta <- cal.theta(train,i)
+theta %>% round(3)
+
+out <- outputs(train,test,theta,i,1)
+out 
+
+ggplot(out$vt) + geom_line(aes(x=t,y=vt.star))
+```
+
+### (b) Optimal Portfolio Table 만들기
+
+```{r}
+port.table <- data.frame(target = NA, deposit = NA, Samsung = NA, KTaG = NA, 
+                         Kakao = NA, Naver = NA, GAS = NA, MEAN = NA, SD = NA, Sharpe = NA)
+
+j <- 1 
+for(i in seq(0.01,0.25,0.01)){
+  theta <- cal.theta(train,i)
+  out <- outputs(train,test,theta,i,1)
+  port.table[j,] <- round(c(i, out$theta[1], out$theta[2], out$theta[3], out$theta[4], out$theta[5], out$theta[6],
+                        out$expected[1], out$expected[2], out$sharpe),3)
+  j <- j+1
+}
+
+kable(port.table,caption = "Optimal Portfolio Table") %>% kable_classic(full_width = F, html_font = "Cambria")
+
+#추가 그래프 
+port <- port.table[1:7] %>% mutate(target = as.character(target)) %>%
+  gather("stock","portfolio",deposit,Samsung,KTaG,Kakao,Naver,GAS)
+port %>% 
+  plot_ly() %>% 
+  add_trace(x = ~target, y = ~portfolio, color= ~stock,  type = "bar") %>% 
+  layout(xaxis = list(title = "목표수익률"), barmode = "stack")
+```
+
+### (c) Markowitz Mean-Variance Chart 그리고 그래프 의미 해석
+
+```{r}
+df <- port.table %>% mutate(AM = MEAN ,GM = AM-(SD^2)/2) %>%
+  gather(key="type","MEAN",AM,GM)
+
+#Efficient Frontier 
+ggplot(df,aes(SD,MEAN,group=type,color=type)) + geom_point() + geom_line(size=1)
+```
+
+### (d) a) 에서 구한 최적포트폴리오 학습자료 에서의 기대수익률과 검정자료에서의 실제수익률을 서로 비교
+
+```{r}
+i <- 0.05
+theta <- cal.theta(train,i)
+out <- outputs(train,test,theta,i,1)
+
+kable(data.frame(row.names = c("MEAN","SD"),expected = out$expected, realized = out$realized),
+      caption = "[part3-d]")%>%kable_classic(full_width = F, html_font = "Cambria")
+```
+
+### (e) 검정자료 (2016.01-2020.12)에서 2016년 1월초 초기자산을 최적포트폴리오에 투자했을 때 t개월 후 최적 포트폴리오의 가치의 시계열 도표와 학습자료 (2011.01-2015.12)에서 구한 투자한지 t개월 후 의 최적 포트폴리오의 가치를 겹쳐서 그려보고 비교 
+
+```{r}
+out$vt %>% gather(key="vt","value",vt,vt.star)%>%ggplot()+geom_line(aes(x=t,y=value,color=vt),size=1)+
+  scale_color_manual(values=c("blue","red"),labels=c("train","Test"))
+
+ggplot(kakao)+geom_line(aes(x=Date,y=Close,group=1))+
+  geom_vline(xintercept="2016/01", linetype = 'dotted', color='red', size = 1)+
+  scale_x_discrete(breaks = c("2011/01","2014/01","2017/01","2020/01"))+
+  ggtitle("카카오 종가")
+
+ggplot(naver)+geom_line(aes(x=Date,y=Close,group=1))+
+  geom_vline(xintercept="2016/01", linetype = 'dotted', color='red', size = 1)+
+  scale_x_discrete(breaks = c("2011/01","2014/01","2017/01","2020/01"))+
+  ggtitle("네이버 종가")
+```
+
+
+
