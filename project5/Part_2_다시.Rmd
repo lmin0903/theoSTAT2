@@ -1,0 +1,208 @@
+---
+title: "[Part 2] 재무변수를 이용한 주가수익율 예측"
+output:
+  html_document:
+    fig_height: 4
+    fig_width: 7
+    highlight: textmate
+    theme: cosmo
+    df_print: paged
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r include=FALSE}
+library(optimx)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(readxl)
+library(leaps)
+library(MASS)
+library(kableExtra)
+library(reshape2)
+library(lubridate)
+```
+
+### 데이터 세팅
+
+```{r message=FALSE, warning=FALSE}
+setwd("~/Desktop/2023-2/이론통계학II/HW5")
+# 데이터 불러오기
+green <- read_excel("2005-Greenblatt-data1.xlsx")
+names(green)<-c("item", "stock", "ROA", "ROA_rank", "PER", "PER_rank", "MagicScore","return","log_return","TotalAsset")
+green$return<-green$return/100
+head(green)
+```
+
+### a) Return vs. Magic Score 산점도 + 예측방정식 + 상관계수/순위상관계수
+
+```{r}
+# 예측방정식
+lm11<-lm(return~MagicScore, data=green)
+```
+
+산점도 및 예측방정식   
+
+-   r = 1.5978 - 0.0032 * score
+
+
+```{r echo=FALSE}
+green %>% ggplot() + geom_point(aes(x=MagicScore, y=return)) + theme_minimal() +
+  geom_abline(intercept = lm11$coef[1], slope = lm11$coef[2], color="royalblue", linewidth=1.4) +
+  ggtitle("Return vs. Magic Score") + theme(plot.title = element_text(size = 17, face = "bold"))+
+  labs(x="Magic Score") +
+  geom_text(x=40, y=7, aes(label=as.character(as.expression("r==1.5978-0.0032*score"))), parse = T, size=5, color="royalblue") + 
+  geom_text(x=21, y=6.3, aes(label=paste(as.character(as.expression("R^2 ==")), round(summary(lm11)$r.squared,4))), parse = T, size=4, color="royalblue")
+```
+
+
+상관계수 및 순위상관계수 + 의미 설명하시오
+
+-   http://www.incodom.kr/%EC%83%81%EA%B4%80%EB%B6%84%EC%84%9D_%EC%A2%85%EB%A5%98 참고함
+
+-   **상관계수(피어슨)** : 정규성을 따르는 두 연속형 변수 간의 선형 관계를 의미. 매직점수가 엄연히 연속형은 아니긴 함. 피어슨 상관계수로 보아 약한 음의 상관관계를 가지고 있을 것으로 파악 가능.
+
+-   **순위상관계수(스피어만)** : 역시 약한 음의 순위 관계를 가진 것으로 해석 가능. 선형 관계를 가정하지 않으며, 연속형 변수일 필요도 없음. ⇒ 스피어만 순위 상관계수가 좀더 해석하기에 적절한 상관계수인 듯?
+
+-   *i.e.* 매직점수 낮을 때 수익률이 높고, 매직점수 높을 때 수익률이 낮았음. (랭크니까 결국 순위가 높을수록 수익률이 높은 거일 듯?)
+
+
+```{r}
+p.rho<-cor(green$return, green$MagicScore)                      #-0.1244
+s.rho<-cor(green$return, green$MagicScore, method = "spearman") #-0.1672
+k.rho<-cor(green$return, green$MagicScore, method = "kendall")  #-0.1107
+```
+
+```{r echo=FALSE}
+c(p.rho, s.rho) %>% round(4) %>% t() %>% kable(format = "html", align = "cc", col.names = c("Pearson", "Spearman Rank")) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F, position = "center") %>%
+  column_spec(1:2,width = "4cm") 
+```
+
+
+### b) 분산 투자한 종목의 수 $m$에 따른 포트폴리오 수익률
+
+-   $\theta_i=\frac{1}{m}, \ \  ^{\forall} i=1, \cdots, m$ 설정한 거 ($m=1,\cdots,50$)
+
+-   랭크니까 `MagicScore` 오름차순 정렬
+
+-   따라서 포트폴리오 수익률은 $r_p(\theta)=\Sigma_{j=1}^m \frac{1}{m}r_j$ = `cumsum(return)/m`
+
+```{r}
+green <- green %>% arrange(MagicScore) %>% mutate(m=1:50, return_port = cumsum(return)/m)
+green %>% dplyr::select(MagicScore, m, return, return_port) %>% head(10) #e.g.
+```
+
+
+m에 따른 포트폴리오 수익률 그래프
+
+
+```{r echo=FALSE}
+g1<-green %>% ggplot() + 
+  geom_line(aes(x=m, y=return_port, color="Magic Score"), linewidth=1.4) +
+  theme_minimal() +
+  ggtitle("Portfolio Return vs. Number of Items Invested") + 
+  theme(plot.title = element_text(size = 17, face = "bold"))+
+  labs(x="Number of Items (m)", y="Portfolio Return") +
+  scale_colour_manual(name="Standard", values=c("Magic Score" = "royalblue1")) +
+  theme(legend.position=c(0.87,0.8),
+        legend.background = element_rect(fill = "white", color = "black"),
+        legend.title = element_text(size=11,face="bold"),
+        legend.text = element_text(size=11))
+g1
+```
+
+
+-   상위 3개를 투자했을 때 가장 수익률 높음 (방림, 대한방직, CKF 했을 때 수익률 약 183.83%)
+
+-   a번에서 $R^2$가 낮았던 만큼, 일정하게 감소하지 않고 변동 심함
+
+
+
+
+### c) 재무변수로 로그수익률 예측
+
+
+-   PER, ROA, Total Asset 들을 적절히 변환하여 로그수익률을 예측하는 회귀모형 찾기
+
+
+```{r eval=FALSE}
+# 실행 X
+green %>% dplyr::select(PER, ROA, TotalAsset, log_return) %>% pairs()
+cand <- green %>% dplyr::select(log_return,PER, ROA, TotalAsset)
+cand <- cand %>% mutate(log_PER = log(PER), log_ROA = log(ROA), log_TA = log(TotalAsset),
+                        #sqrt_PER = sqrt(PER), sqrt_ROA = sqrt(ROA), sqrt_TA = sqrt(TotalAsset),
+                        PER_2 = PER^2, ROA_2 = ROA^2, TA_2 = TotalAsset^2)
+comb<-regsubsets(log_return~., data=cand, nvmax = 6)
+summary(step(lm(log_return~., data=cand), direction = "both"))$r.squared
+#49% 나오긴 하는데 너무 복잡함
+summary(comb)$rsq
+summary(comb)$adjr2
+summary(comb) # 변수 4개로 선택 : ROA, ln(TA), ln(ROA), sqrt(ROA)
+```
+
+보고서용
+
+```{r}
+cand <- green %>% dplyr::select(log_return, PER, ROA, TotalAsset)
+cand <- cand %>% mutate(log_PER = log(PER), log_ROA = log(ROA), log_TA = log(TotalAsset),
+                        sqrt_PER = sqrt(PER), sqrt_ROA = sqrt(ROA), sqrt_TA = sqrt(TotalAsset),
+                        PER_2 = PER^2, ROA_2 = ROA^2, TA_2 = TotalAsset^2,
+                        b_PER = 1/PER, b_ROA = 1/ROA, b_TA = 1/TotalAsset)
+myLST<-list(); comb<-data.frame(per=NA, roa=NA, ta=NA); n=1
+for(i in c(2,5,8,11,14)){
+  for(j in c(3,6,9,12,15)){
+    for(k in c(4,7,10,13,16)){
+      comb[n,]<-c(i,j,k)
+      n<-n+1
+    }
+  }
+}
+
+for(k in 1:125){
+  myDF<-data.frame(log_return=cand$log_return, PER=cand[,comb$per[k]], ROA=cand[,comb$roa[k]], TA=cand[,comb$ta[k]])
+  myLST[[k]]<-lm(log_return~., data=myDF)
+}
+
+myR2<-lapply(myLST, function(x){summary(x)$r.squared})
+cand_fin<-c(); for(i in 1:125){cand_fin[i]<-myR2[[i]]}
+lm21<-myLST[[which.max(cand_fin)]] ; max(cand_fin)
+lm21[["terms"]][[3]] # Per^2, 1/ROA, log(TA) 선택
+```
+
+
+plot
+
+```{r echo=FALSE}
+ggplot() +
+  geom_point(aes(x=lm21$fitted.values, y=cand$log_return)) + theme_minimal() +
+  geom_abline(intercept = 0, slope = 1, color = "royalblue", linewidth = 1.4) +
+  ggtitle("Log Return vs. Score*") + theme(plot.title = element_text(size = 17, face = "bold")) +
+  labs(x="Score*", y="Log Return", subtitle = "R²=0.4152")
+```
+
+
+### d) 분산 투자한 종목의 수 $m$ 에 따른 포트폴리오 수익률
+
+
+```{r message=FALSE}
+#원래 내가 했던 거 (추정 수익률 사용)
+green1 <- green %>% 
+  mutate(pred_log_return = lm21$fitted.values, pred_return = exp(pred_log_return)-1) %>%
+  arrange(desc(pred_return)) %>%
+  mutate(m2 = 1:50, pred_return_port = cumsum(pred_return)/m2)
+g1 + geom_line(aes(x=green1$m2, y=green1$pred_return_port, color="Fitted Return"), linewidth=1.4) +
+  scale_colour_manual(name="Standard", values=c("Magic Score" = "royalblue1", "Fitted Return"="indianred1"))
+
+#언니 방법대로 한 거 (원래 수익률 사용)
+green2 <- green %>% 
+  mutate(pred_log_return = lm21$fitted.values, pred_return = exp(pred_log_return)-1) %>%
+  arrange(desc(pred_return)) %>%
+  mutate(m2 = 1:50, pred_return_port = cumsum(return)/m2)
+g1 + geom_line(aes(x=green2$m2, y=green2$pred_return_port, color="Fitted Return"), linewidth=1.4) +
+  scale_colour_manual(name="Standard", values=c("Magic Score" = "royalblue1", "Fitted Return"="indianred1"))
+```
+
+

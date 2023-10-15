@@ -1,0 +1,339 @@
+---
+title: "[Part 1] 주식투자 포트폴리오 만들기"
+output:
+  html_document:
+    fig_height: 5
+    fig_width: 8
+    highlight: textmate
+    theme: cosmo
+    df_print: paged
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r include=FALSE}
+library(optimx)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(readxl)
+library(leaps)
+library(MASS)
+library(kableExtra)
+library(reshape2)
+library(lubridate)
+library(readr)
+library(scales)
+library(patchwork)
+library(forecast)
+library(ggfortify)
+library(ggpubr)
+options(scipen=99)
+```
+
+### 데이터 세팅
+
+```{r message=FALSE, warning=FALSE}
+setwd("~/Desktop/2023-2/이론통계학II/HW5")
+# 데이터 불러오기
+naver <- read_csv("yahoo_naver.csv", col_types = cols(Date = col_date(format = "%Y-%m-%d"))) %>%
+  dplyr::select(Date, Close) %>% `names<-`(c("Date", "Pt")) %>% mutate(logPt=log(Pt))
+gas <- read_csv("yahoo_gas.csv", col_types = cols(Date = col_date(format = "%Y-%m-%d"))) %>%
+  dplyr::select(Date, Close) %>% `names<-`(c("Date", "Pt")) %>% mutate(logPt=log(Pt))
+head(naver)
+head(gas)
+```
+
+
+### 1) 각 종목별 월별 종가 / 로그종가 시계열 도표
+
+-   $i=1 \Rightarrow$ `naver` & $i=2 \Rightarrow$ `gas` 로 설정
+
+-   $n=59$, $m=60$
+
+
+```{r echo=FALSE, fig.height=7, fig.width=10}
+g11<-ggplot() + geom_line(aes(x=0:120, y=naver$Pt), color="royalblue1", linewidth=1.4) + 
+  theme_minimal() + ggtitle("[NAVER] Monthly Closings") + 
+  theme(plot.title = element_text(size = 17, face = "bold")) +
+  labs(x="t", y=expression(P[1*t])) + 
+  scale_x_continuous(breaks = seq(0,120,by=12)) +
+  scale_y_continuous(labels = scales::comma)
+
+g12<-ggplot() + geom_line(aes(x=0:120, y=gas$Pt), color="royalblue1", linewidth=1.4) + 
+  theme_minimal() + ggtitle("[GAS] Monthly Closings") + 
+  theme(plot.title = element_text(size = 17, face = "bold")) +
+  labs(x="t", y=expression(P[2*t])) +
+  scale_x_continuous(breaks = seq(0,120,by=12)) +
+  scale_y_continuous(labels = scales::comma)
+
+g13<-ggplot() + geom_line(aes(x=0:120, y=naver$logPt), color="royalblue1", linewidth=1.4) +
+  theme_minimal() + ggtitle("[NAVER] log - Monthly Closings") + 
+  theme(plot.title = element_text(size = 17, face = "bold")) +
+  labs(x="t", y=expression(log~P[1*t])) + scale_x_continuous(breaks = seq(0,120,by=12))
+
+g14<-ggplot() + geom_line(aes(x=0:120, y=gas$logPt), color="royalblue1", linewidth=1.4) +
+  theme_minimal() + ggtitle("[GAS] log - Monthly Closings") + 
+  theme(plot.title = element_text(size = 17, face = "bold")) +
+  labs(x="t", y=expression(log~P[2*t])) +  scale_x_continuous(breaks = seq(0,120,by=12))
+
+grid.arrange(g11,g12,g13,g14,ncol=2)
+```
+
+
+### 2) 개별 종목 월별 수익률 $r_{it}$ 의 정규성 및 독립성 가정 검토
+
+
+```{r}
+# 개별 종목 월별 수익률
+naver <- naver %>% mutate(return = (Pt-lag(Pt))/lag(Pt))
+gas <- gas %>% mutate(return = (Pt-lag(Pt))/lag(Pt))
+```
+
+
+NAVER 정규성/독립성 가정 검토
+
+```{r echo=FALSE, fig.height=7, fig.width=10, message=FALSE}
+g21 <- ggplot() + geom_line(aes(x=1:120, y=naver$return[-1]), color="royalblue1", linewidth=1) +
+  theme_minimal() + theme(plot.subtitle = element_text(size = 13, face = "bold")) +
+  labs(x="t", y=expression(r[1*t]), subtitle = "Time Series Plot") +  
+  scale_x_continuous(breaks = c(1,(1:10)*12)) +
+  geom_abline(slope = 0, intercept = mean(naver$return, na.rm = T), color="indianred1", linewidth=1, linetype="dashed")
+
+g22 <- ggplot() + geom_histogram(aes(x=naver$return[-1]),color="royalblue4", fill="cornflowerblue", bins = 20) +
+  theme_minimal() + theme(plot.subtitle = element_text(size = 13, face = "bold")) +
+  labs(x=expression(r[1*t]), y=NULL, subtitle = "Histogram")
+
+g23 <- ggplot(naver[-1,], aes(sample=return)) + 
+  stat_qq() + stat_qq_line(color="royalblue2", linewidth=1.3) + 
+  labs(x="Theoretical", y="Sample", subtitle = "Normal Q-Q Plot") +
+  theme_minimal() + theme(plot.subtitle = element_text(size = 13, face = "bold"))
+
+g24 <- acf(naver$return[-1], plot = F) %>% autoplot() +
+  labs(subtitle = "Auto Correlation") +
+  theme_minimal() + theme(plot.subtitle = element_text(size = 13, face = "bold"))
+
+(g21+g22)/(g23+g24) + plot_annotation(title="[NAVER] Normality & Independence") &
+  theme(plot.title = element_text(size=16, face = "bold"))
+
+```
+
+
+
+가스공사 정규성/독립성 가정 검토
+
+```{r echo=FALSE, fig.height=7, fig.width=10, message=FALSE}
+g31 <- ggplot() + geom_line(aes(x=1:120, y=gas$return[-1]), color="royalblue1", linewidth=1) +
+  theme_minimal() + theme(plot.subtitle = element_text(size = 13, face = "bold")) +
+  labs(x="t", y=expression(r[2*t]), subtitle = "Time Series Plot") +  
+  scale_x_continuous(breaks = c(1,(1:10)*12)) +
+  geom_abline(slope = 0, intercept = mean(gas$return, na.rm = T), color="indianred1", linewidth=1, linetype="dashed")
+
+g32 <- ggplot() + geom_histogram(aes(x=gas$return[-1]),color="royalblue4", fill="cornflowerblue", bins = 20) +
+  theme_minimal() + theme(plot.subtitle = element_text(size = 13, face = "bold")) +
+  labs(x=expression(r[2*t]), y=NULL, subtitle = "Histogram")
+
+g33 <- ggplot(gas[-1,], aes(sample=return)) + 
+  stat_qq() + stat_qq_line(color="royalblue2", linewidth=1.3) + 
+  labs(x="Theoretical", y="Sample", subtitle = "Normal Q-Q Plot") +
+  theme_minimal() + theme(plot.subtitle = element_text(size = 13, face = "bold"))
+
+g34 <- acf(gas$return[-1], plot = F) %>% autoplot() +
+  labs(subtitle = "Auto Correlation") +
+  theme_minimal() + theme(plot.subtitle = element_text(size = 13, face = "bold"))
+
+(g31+g32)/(g33+g34) + plot_annotation(title="[GAS] Normality & Independence") &
+  theme(plot.title = element_text(size=16, face = "bold"))
+
+```
+
+**네이버 + 가스공사 모두 정규성 + 독십성 가정 만족 함**
+
+
+
+### 3) [학습자료 vs. 검정자료] 수익률의 평균/표준편차/상관계수/공분산 행렬
+
+
+```{r}
+#학습자료 / 검정자료 설정
+train1 <- naver %>% filter(year(Date) %in% 2011:2015)
+test1 <- naver %>% filter(year(Date)>2015)
+train2 <- gas %>% filter(year(Date) %in% 2011:2015)
+test2 <- gas %>% filter(year(Date)>2015)
+#평균/표준편차/상관계수
+temp1<-
+  list(mu1=data.frame(train = mean(train1$return), test = mean(test1$return)),
+     sigma1=data.frame(train = sd(train1$return), test = sd(test1$return)),
+     rho1=cor(train1$return, test1$return))
+temp2<-
+  list(mu2=data.frame(train = mean(train2$return), test = mean(test2$return)),
+     sigma2=data.frame(train = sd(train2$return), test = sd(test2$return)),
+     rho2=cor(train2$return, test2$return))
+temp1 # 네이버
+temp2 # 가스공사
+# 공분산 행렬
+cov(data.frame(train1$return, train2$return)) #학습자료
+cov(data.frame(test1$return, test2$return)) #검정자료
+```
+
+
+
+### 4) 분산투자 비율에 따른 포트폴리오 수익률
+
+
+수익률 데이터 불러오기 - 월별금리 2011.01 ~ 2020.12
+
+```{r}
+riskless <- read_csv("시장금리(월,분기,년)_08165140.csv", 
+    col_types = cols(변환 = col_date(format = "%Y/%m"))) %>% `colnames<-`(c("Date", "interest"))
+riskless <- riskless %>% mutate(r0 = (1+interest*0.01)^(1/12)-1)
+head(riskless)
+```
+
+
+각 포트폴리오에 따른 $V_t$ 계산 ($t=1, \cdots , 60$)
+
+```{r}
+# 포트폴리오 생성
+P0 <- P1 <- P2 <- P3 <- 
+  data.frame(Date=test1$Date, r0=riskless$r0[61:120], r1=test1$return, r2=test2$return)
+# theta들로 Vt 계산해주는 함수
+myValue <- function(dat, th0, th1, th2, V0=1) {
+  dat <- dat %>% mutate(PortReturn = th0*r0 + th1*r1 + th2*r2,
+                        Value = V0 * cumprod(1+PortReturn))
+  return(dat)
+}
+# 제시된 대로 theta 지정
+P0 <- myValue(P0, 1, 0, 0)
+P1 <- myValue(P1, 0, 1, 0)
+P2 <- myValue(P2, 0, 0, 1)
+P3 <- myValue(P3, 1/3, 1/3, 1/3)
+
+head(P0); head(P1); head(P2); head(P3)
+```
+
+
+$V_t$의 시계열도표 (만 원 단위)
+
+
+```{r echo=FALSE}
+library(RColorBrewer)
+brewer.pal(n=5,"Set2")
+
+g4 <- ggplot() + geom_line(aes(x=P0$Date, y=P0$Value*1000, color="P0"), linewidth=1) + 
+  geom_line(aes(x=P1$Date, y=P1$Value*1000, color="P1"), linewidth=1) +
+  geom_line(aes(x=P2$Date, y=P2$Value*1000, color="P2"), linewidth=1) +
+  geom_line(aes(x=P3$Date, y=P3$Value*1000, color="P3"), linewidth=1) +
+  scale_color_brewer(palette = "Set2") + theme_minimal() +
+  ggtitle("Portfolio Values") + 
+  labs(x="Date", y="Value (10,000 WON)", color = "Portfolio") + 
+  theme(plot.title = element_text(size = 15, face = "bold"),
+        legend.background = element_rect(fill = "white", color = "black"),
+        legend.title = element_text(size=11,face="bold"),
+        legend.text = element_text(size=10)) +
+  scale_y_continuous(labels = scales::comma) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y")
+
+g4
+
+ggplot() + 
+  geom_line(aes(x=P2$Date, y=P2$Value*1000, color="P2"), linewidth=1) +
+  geom_line(aes(x=P3$Date, y=P3$Value*1000, color="P3"), linewidth=1) +
+  geom_line(aes(x=P0$Date, y=P0$Value*1000, color="P0"), linewidth=1) + 
+  geom_line(aes(x=P1$Date, y=P1$Value*1000, color="P1"), linewidth=1) +
+  scale_color_brewer(palette = "Set2") + theme_minimal() +
+  ggtitle("Portfolio Values") + 
+  labs(x="Date", y="Value (10,000 WON)", color = "Portfolio") + 
+  theme(plot.title = element_text(size = 15, face = "bold"),
+        legend.background = element_rect(fill = "white", color = "black"),
+        legend.title = element_text(size=11,face="bold"),
+        legend.text = element_text(size=10)) +
+  scale_y_continuous(labels = scales::comma) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") + 
+  scale_colour_manual(values=c("P0" = "#66C2A5", "P1"="#FC8D62", "P2"="lightgrey", "P3"="grey"))
+
+
+g4 + scale_colour_manual(values=c("P0" = "lightgrey", "P1"="grey", "P2"="#8DA0CB", "P3"="#E78AC3"))
+
+
+```
+
+
+### 5) 투자비율 방치 여부에 따른 포트폴리오의 가치
+
+
+a) 그대로 방치 (buy & hold)
+
+```{r}
+# 포트폴리오 생성
+Port_A <- data.frame(Date=test1$Date, r0 = cumprod(1+riskless$r0[61:120])-1)
+for (t in 1:60){
+  P10<-train1$Pt %>% tail(1)
+  P20<-train2$Pt %>% tail(1)
+  Port_A$r1[t]<-(test1$Pt[t]-P10)/P10
+  Port_A$r2[t]<-(test2$Pt[t]-P20)/P20
+}
+
+# theta들로 Vt 계산해주는 함수
+myValue2 <- function(dat, th0, th1, th2, V0=1) {
+  dat <- dat %>% mutate(Value = V0 * (1 + th0*r0 + th1*r1 + th2*r2))
+  return(dat)
+}
+# 제시된 대로 theta 지정
+P3a <- myValue2(Port_A, 1/3, 1/3, 1/3)
+P4a <- myValue2(Port_A, 0, 1/2, 1/2)
+
+head(P3a); head(P4a)
+```
+
+
+
+b) 매월 말 재조정 (rebalancing)
+
+4번과 동일한 원리
+
+```{r}
+P3b <- P3
+P4b <- myValue(P3, 0, 1/2, 1/2)
+
+head(P3b); head(P4b)
+```
+
+
+시계열도표 
+
+
+```{r echo=FALSE, fig.height=6, fig.width=7}
+g51 <- ggplot() + geom_line(aes(x=P3a$Date, y=P3a$Value*1000, color="Buy and Hold"), linewidth=1) + 
+  geom_line(aes(x=P3b$Date, y=P3b$Value*1000, color="Rebalancing"), linewidth=1) +
+  scale_color_brewer(palette = "Set1") + theme_minimal() +
+  labs(x="Date", y="Value (10,000 WON)", color = "Portfolio", subtitle = "Portfolio 3") + 
+  theme(plot.subtitle = element_text(size=13),
+        legend.background = element_rect(fill = "white", color = "black"),
+        legend.title = element_text(size=11,face="bold"),
+        legend.text = element_text(size=10)) +
+  scale_y_continuous(labels = scales::comma) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y")
+
+g52 <- ggplot() + geom_line(aes(x=P4a$Date, y=P4a$Value*1000, color="Buy and Hold"), linewidth=1) + 
+  geom_line(aes(x=P4b$Date, y=P4b$Value*1000, color="Rebalancing"), linewidth=1) +
+  scale_color_brewer(palette = "Set1") + theme_minimal() +
+  labs(x="Date", y="Value (10,000 WON)", color = "Portfolio", subtitle = "Portfolio 4") + 
+  theme(plot.subtitle = element_text(size=13),
+        legend.background = element_rect(fill = "white", color = "black"),
+        legend.title = element_text(size=11,face="bold"),
+        legend.text = element_text(size=10)) +
+  scale_y_continuous(labels = scales::comma) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y")
+
+
+
+(g51/g52) + plot_layout(guides = "collect") +
+  plot_annotation(title="[Portfolio Values] Buy and Hold vs. Rebalancing") &
+  theme(plot.title = element_text(size=15, face = "bold"),
+        legend.position = "bottom")
+```
+
+
+
