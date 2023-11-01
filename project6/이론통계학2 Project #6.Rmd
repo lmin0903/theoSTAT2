@@ -1,0 +1,517 @@
+---
+title: '이론통계학2 Project #6'
+author: "232STG13 서민지"
+output: html_document
+---
+
+## Part 1) (사고빈도 GLM Model)
+```{r include=FALSE}
+setwd("C:/Users/서민지/Desktop/통계 대학원/2023-2/이론통계학2/Project 6")
+library(readxl)
+library(tidyverse)
+library(GGally)
+library(gridExtra)
+library(MASS)
+```
+
+### (a)
+```{r message=FALSE, warning=FALSE}
+automobile <- read_excel("1977-스웨덴자동차 보험_1956-캐나다자동차보험자료.xls", sheet=1)
+
+colnames(automobile) <- c("kilo","zone","bonus","make","insured","claims","payment")
+```
+
+
+```{r message=FALSE, warning=FALSE}
+#i) bonus (categorical)
+automobile.n <- automobile %>% filter(insured != 0) %>% mutate_at(1:4, factor)
+m <- sum(automobile.n$insured)
+
+dim(automobile.n)
+
+# interaction X
+pois.fit1 <- glm(claims ~ offset(log(insured)) + kilo + zone + bonus + make, data=automobile.n, family = poisson(link = "log"))
+
+pois.step1.aic <- step(pois.fit1, trace = FALSE)
+pois.step1.bic <- step(pois.fit1, trace = FALSE, k = log(m))
+
+# interaction O(1차)
+pois.fit2 <- glm(claims ~ offset(log(insured))+kilo+zone+bonus+make+kilo:zone+kilo:bonus+kilo:make+zone:bonus+zone:make+bonus:make, data=automobile.n, family = poisson(link = "log"))
+
+pois.step2.aic <- step(pois.fit2, trace = FALSE)
+pois.step2.bic <- step(pois.fit2, trace = FALSE, k = log(m))
+
+#유사수준 그룹화 전
+pois.main.bf <- rbind(extractAIC(pois.fit1), extractAIC(pois.step1.aic), extractAIC(pois.fit1, k=log(m)), extractAIC(pois.step1.bic, k=log(m)))
+
+pois.int.bf <- rbind(extractAIC(pois.fit2), extractAIC(pois.step2.aic), extractAIC(pois.fit2, k=log(m)), extractAIC(pois.step2.bic, k=log(m)))
+```
+
+
+```{r message=FALSE, warning=FALSE}
+#유사수준 그룹화
+
+kilo.name <- paste0("kilo", 2:5)
+others <- c("zone", "bonus", "make")
+coef_names <- rownames(summary(pois.fit2)$coef)
+
+# kilo.list를 초기화
+kilo.list <- list()
+
+for (i in 1:length(kilo.name)) {
+    kilo.list[[i]] <- list()
+    
+    for (j in 1:length(others)) {
+        coef_values <- round(summary(pois.fit2)$coef[grep(kilo.name[i], grep(others[j], coef_names, value = TRUE), value = TRUE), 1], 2)
+        duplicated_values <- coef_values[coef_values %in% coef_values[duplicated(coef_values)]]
+        if (length(duplicated_values) > 0)
+          kilo.list[[i]][[others[j]]] <- duplicated_values
+    }
+    names(kilo.list)[i] <- kilo.name[i]
+}
+
+kilo.list
+
+#kilo2:bonus5,6,7 / kilo3:make4,9 / kilo4:bonus3,7 / kilo5:zone3,6
+
+merged1<-automobile.n %>% filter(c(kilo == 2 & bonus %in% c(5,6,7)) | c(kilo == 4 & bonus %in% c(3,7))) %>% group_by(kilo, zone, make) %>% mutate(insured = sum(insured), claims = sum(claims), payment = sum(payment)) %>% filter(c(kilo == 2 & bonus == 5) | c(kilo == 4 & bonus == 3)) %>% ungroup()
+
+merged2<-automobile.n %>% filter(kilo == 3 & make %in% c(4,9)) %>% group_by(kilo,zone,bonus) %>% mutate(insured = sum(insured), claims = sum(claims), payment = sum(payment)) %>% filter(kilo == 3 & make == 4) %>% ungroup()
+
+merged3<-automobile.n %>% filter(kilo == 5 & zone %in% c(3,6)) %>% group_by(kilo, bonus, make) %>% mutate(insured = sum(insured), claims = sum(claims), payment = sum(payment)) %>% filter(kilo == 5 & zone == 3) %>% ungroup()
+
+new.auto <- automobile.n %>% filter(!(kilo == 2 & bonus %in% c(5,6,7)) & !(kilo == 3 & make %in% c(4,9)) & !(kilo == 4 & bonus %in% c(3,7)) & !(kilo == 5 & zone %in% c(3,6))) %>% bind_rows(bind_rows(merged1,merged2,merged3)) %>% arrange(kilo, zone, bonus, make)
+
+new.auto <- new.auto %>% mutate_at(1:4, as.numeric)
+new.auto$bonus[new.auto$kilo == 2 & new.auto$bonus == 5] <- 567
+new.auto$make[new.auto$kilo == 3 & new.auto$make == 4] <-49
+new.auto$bonus[new.auto$kilo == 4 & new.auto$bonus == 3] <-37
+new.auto$zone[new.auto$kilo == 5 & new.auto$zone == 3] <-36
+new.auto <- new.auto %>% mutate_at(1:4, factor) #1856 * 7
+new.auto
+
+pois.fit11 <- glm(claims ~ offset(log(insured)) + kilo + zone + bonus + make, data=new.auto, family=poisson)
+
+pois.fit22 <- glm(claims ~ offset(log(insured)) + kilo + zone + bonus + make + kilo:zone + kilo:bonus + kilo:make + zone:bonus + zone:make + bonus:make, data=new.auto, family=poisson)
+
+pois.step11.aic <- step(pois.fit11, trace = FALSE)
+pois.step11.bic <- step(pois.fit11, trace = FALSE, k = log(m))
+
+pois.step22.aic <- step(pois.fit22, trace = FALSE)
+pois.step22.bic <- step(pois.fit22, trace = FALSE, k = log(m))
+
+#유사수준 그룹화 후
+pois.main.af <- rbind(extractAIC(pois.fit11), extractAIC(pois.step11.aic), extractAIC(pois.fit11, k=log(m)), extractAIC(pois.step11.bic, k=log(m)))
+
+pois.int.af <- rbind(extractAIC(pois.fit22), extractAIC(pois.step22.aic), extractAIC(pois.fit22, k=log(m)), extractAIC(pois.step22.bic, k=log(m)))
+```
+
+```{r message=FALSE, warning=FALSE}
+pois.main <- cbind(pois.main.bf, pois.main.af); colnames(pois.main)<-c("bf p", "bf value", "af p", "af value"); rownames(pois.main)<-c("AIC", "step AIC", "BIC", "step BIC")
+
+pois.int <- cbind(pois.int.bf, pois.int.af); colnames(pois.int)<-c("bf p", "bf value", "af p", "af value"); rownames(pois.int)<-c("AIC", "step AIC", "BIC", "step BIC")
+
+pois.main
+pois.int
+lmtest::lrtest(pois.fit11, pois.fit22) #p-value < 2.2e-16 이므로 귀무가설 기각. interaction 포함된 complex model 선택.
+```
+
+
+```{r message=FALSE, warning=FALSE}
+# ii) bonus numeric
+automobile.nn <- automobile %>% filter(insured != 0) %>% mutate_at(c(1:2,4), factor)
+
+# interaction X
+pois.fit1n <- glm(claims ~ offset(log(insured)) + kilo + zone + bonus + make, data=automobile.nn, family = poisson(link = "log"))
+
+pois.step1n.aic <- step(pois.fit1n, trace = FALSE)
+pois.step1n.bic <- step(pois.fit1n, trace = FALSE, k = log(m))
+
+# interaction O(1차)
+pois.fit2n <- glm(claims ~ offset(log(insured))+kilo+zone+bonus+make+kilo:zone+kilo:bonus+kilo:make+zone:bonus+zone:make+bonus:make, data=automobile.nn, family = poisson(link = "log"))
+
+pois.step2n.aic <- step(pois.fit2n, trace = FALSE)
+pois.step2n.bic <- step(pois.fit2n, trace = FALSE, k = log(m))
+
+#유사수준 그룹화 전
+pois.main.bfn <- rbind(extractAIC(pois.fit1n), extractAIC(pois.step1n.aic), extractAIC(pois.fit1n, k=log(m)), extractAIC(pois.step1n.bic, k=log(m)))
+
+pois.int.bfn <- rbind(extractAIC(pois.fit2n), extractAIC(pois.step2n.aic), extractAIC(pois.fit2n, k=log(m)), extractAIC(pois.step2n.bic, k=log(m)))
+```
+
+
+```{r message=FALSE, warning=FALSE}
+coef_namesn <- rownames(summary(pois.fit2n)$coef)
+
+# kilo.list를 초기화
+kilo.listn <- list()
+
+for (i in 1:length(kilo.name)) {
+    kilo.listn[[i]] <- list()
+    
+    for (j in 1:length(others)) {
+        coef_values <- round(summary(pois.fit2n)$coef[grep(kilo.name[i], grep(others[j], coef_namesn, value = TRUE), value = TRUE), 1], 2)
+        duplicated_values <- coef_values[coef_values %in% coef_values[duplicated(coef_values)]]
+        if (length(duplicated_values) > 0)
+          kilo.listn[[i]][[others[j]]] <- duplicated_values
+    }
+    names(kilo.listn)[i] <- kilo.name[i]
+}
+
+kilo.listn
+
+#kilo3 : make7,9 / kilo4 : make4,7 / kilo5 : make3,6
+
+merged<-automobile.nn %>% filter(c(kilo == 3 & make %in% c(7,9)) | c(kilo == 4 & make %in% c(4,7)) | c(kilo == 5 & make %in% c(3,6))) %>% group_by(kilo, zone) %>% mutate(bonus = mean(bonus), insured = sum(insured), claims = sum(claims), payment = sum(payment)) %>% filter(c(kilo == 3 & make == 7) | c(kilo == 4 & make == 4) | c(kilo == 5 & make == 3)) %>% ungroup() %>% dplyr::select(kilo, zone, make, bonus, insured, claims, payment) %>% distinct()
+
+merged <- merged %>% mutate_at(1:3, as.numeric)
+
+merged$make[merged$kilo == 3 & merged$make ==7] <- 79
+merged$make[merged$kilo == 4 & merged$make ==4] <- 47
+merged$make[merged$kilo == 5 & merged$make ==3] <- 36
+
+merged <- merged %>% mutate_at(1:3, factor)
+
+new.auton <- automobile.nn %>% filter(!(kilo == 3 & make %in% c(7,9)) & !(kilo == 4 & make %in% c(4,7)) & !(kilo == 5 & make %in% c(3,6))) %>% dplyr::select(kilo, zone, make, bonus, insured, claims, payment) %>% bind_rows(merged) %>% arrange(kilo, zone, make)
+new.auton
+
+pois.fit11n <- glm(claims ~ offset(log(insured)) + kilo + zone + bonus + make, data=new.auton, family = poisson(link = "log"))
+
+pois.fit22n <- glm(claims ~ offset(log(insured)) + kilo + zone + bonus + make + kilo:zone + kilo:bonus + kilo:make + zone:bonus + zone:make + bonus:make, data=new.auton, family=poisson(link = "log"))
+
+pois.step11n.aic <- step(pois.fit11n, trace = FALSE)
+pois.step11n.bic <- step(pois.fit11n, trace = FALSE, k = log(m))
+
+pois.step22n.aic <- step(pois.fit22n, trace = FALSE)
+pois.step22n.bic <- step(pois.fit22n, trace = FALSE, k = log(m))
+
+#유사수준 그룹화 후
+pois.main.afn <- rbind(extractAIC(pois.fit11n), extractAIC(pois.step11n.aic), extractAIC(pois.fit11n, k=log(m)), extractAIC(pois.step11n.aic, k=log(m)))
+pois.int.afn <- rbind(extractAIC(pois.fit22n), extractAIC(pois.step22n.aic), extractAIC(pois.fit22n, k=log(m)), extractAIC(pois.step22n.bic, k=log(m)))
+```
+
+```{r message=FALSE, warning=FALSE}
+pois.mainn <- cbind(pois.main.bfn, pois.main.afn); colnames(pois.mainn)<-c("bf p", "bf value", "af p", "af value"); rownames(pois.mainn)<-c("AIC", "step AIC", "BIC", "step BIC")
+
+pois.intn <- cbind(pois.int.bfn, pois.int.afn); colnames(pois.intn)<-c("bf p", "bf value", "af p", "af value"); rownames(pois.intn)<-c("AIC", "step AIC", "BIC", "step BIC")
+
+pois.mainn
+pois.intn
+lmtest::lrtest(pois.fit11n, pois.fit22n) #p-value < 2.2e-16 이므로 귀무가설 기각. complex model 선택.
+```
+```{r message=FALSE, warning=FALSE}
+#(a) 최적 모형 결정
+
+# i) bonus numerical vs. categorical 결정
+lmtest::lrtest(pois.fit1n, pois.fit1) #main effect model
+
+lmtest::lrtest(pois.fit2n, pois.fit2) #interaction model
+```
+main effect model과 interaction model 모두 lrt에서 p-value가 매우 작은 것으로 보아bonus가 numerical일 때(nested model)보다 categorical일 때(full model) 더 유의하다는 것으로 해석할 수 있다. 따라서, bonus는 categorical로 처리한다.
+
+```{r message=FALSE, warning=FALSE}
+# ii) main vs. interaction model
+lmtest::lrtest(pois.fit11, pois.fit22)
+```
+유사수준 그룹화한 후의 데이터를 가지고 main effect model과 interaction model을 비교해보았다. full model이 reduced model보다 유의하다는 것을 p-value가 매우 작은 것을 통해 확인할 수 있으므로 interaction model이 선택된다. 또한, 유사수준 그룹화 전과 후를 비교해보면 AIC와 BIC 모두 줄어들었기 때문에 유의수준 그룹화한 모델로 선택한다.  
+따라서, **bonus를 categorical로 취급하고 유의수준 그룹화를 진행한 interaction model**이 (a)의 최적 모형이라고 할 수 있다.
+
+
+### (b)
+```{r message=FALSE, warning=FALSE}
+#i) bonus categorical
+automobile.b <- automobile.n %>% filter(claims<=insured)
+m <- sum(automobile.b$insured)
+
+# interaction X
+logit.fit1 <- glm(cbind(claims, insured-claims) ~ kilo+zone+bonus+make, data=automobile.b, family = binomial(link="logit"))
+
+logit.step1.aic <- step(logit.fit1, trace = FALSE)
+logit.step1.bic <- step(logit.fit1, trace = FALSE, k = log(m))
+
+
+# interaction O(1차)
+logit.fit2 <- glm(cbind(claims, insured-claims) ~ kilo+zone+bonus+make+kilo:zone+kilo:bonus+kilo:make+zone:bonus+zone:make+bonus:make, data=automobile.b, family = binomial(link="logit"))
+
+logit.step2.aic <- step(logit.fit2, trace = FALSE)
+logit.step2.bic <- step(logit.fit2, trace = FALSE, k = log(m))
+
+#유사수준 그룹화 전
+logit.main.bf <- rbind(extractAIC(logit.fit1), extractAIC(logit.step1.aic), extractAIC(logit.fit1, k=log(m)), extractAIC(logit.step1.bic, k=log(m)))
+
+logit.int.bf <- rbind(extractAIC(logit.fit2), extractAIC(logit.step2.aic), extractAIC(logit.fit2, k=log(m)), extractAIC(logit.step2.bic, k=log(m)))
+```
+
+```{r message=FALSE, warning=FALSE}
+#유사수준 그룹화
+kilo.name <- paste0("kilo", 2:5)
+others <- c("zone", "bonus", "make")
+coef_names <- rownames(summary(logit.fit2)$coef)
+
+# kilo.list를 초기화
+kilo.list <- list()
+
+for (i in 1:length(kilo.name)) {
+    kilo.list[[i]] <- list()
+    
+    for (j in 1:length(others)) {
+        coef_values <- round(summary(logit.fit2)$coef[grep(kilo.name[i], grep(others[j], coef_names, value = TRUE), value = TRUE), 1], 2)
+        duplicated_values <- coef_values[coef_values %in% coef_values[duplicated(coef_values)]]
+        if (length(duplicated_values) > 0)
+          kilo.list[[i]][[others[j]]] <- duplicated_values
+    }
+    names(kilo.list)[i] <- kilo.name[i]
+}
+
+kilo.list
+
+#kilo2:bonus5,6,7 / kilo3:make4,9 / kilo4:make4,9 / kilo5:bonus2,4
+
+merged11<-automobile.b %>% filter(c(kilo == 2 & bonus %in% c(5,6,7)) | c(kilo == 5 & bonus %in% c(2,4))) %>% group_by(kilo, zone, make) %>% mutate(insured = sum(insured), claims = sum(claims), payment = sum(payment)) %>% filter(c(kilo == 2 & bonus == 5) | c(kilo == 5 & bonus == 2)) %>% ungroup() #120 * 7
+
+merged22<-automobile.b %>% filter((kilo == 4 & make %in% c(4,9)) | (kilo == 3 & make %in% c(4,9))) %>% group_by(kilo, zone, bonus) %>% mutate(insured = sum(insured), claims = sum(claims), payment = sum(payment)) %>% filter((kilo == 4 & make == 4) | (kilo == 3 &  make == 4)) %>% ungroup() #94 * 7
+
+merged.b <- bind_rows(merged11, merged22)
+
+merged.b <- merged.b %>% mutate_at(1:4, as.numeric)
+
+merged.b$bonus[merged.b$kilo == 2 & merged.b$bonus == 5] <- 567
+merged.b$bonus[merged.b$kilo == 5 & merged.b$make ==2] <- 24
+merged.b$make[merged.b$kilo == 3 & merged.b$make == 4] <- 49
+merged.b$make[merged.b$kilo == 4 & merged.b$make == 4] <- 49
+
+merged.b <- merged.b %>% mutate_at(1:4, factor)
+
+new.auto.b <- automobile.b %>% filter(!(kilo == 2 & bonus %in% c(5,6,7)) & !(kilo == 3 & make %in% c(4,9)) & !(kilo == 4 & make %in% c(4,9)) & !(kilo == 5 & bonus %in% c(2,4))) %>% bind_rows(bind_rows(merged11,merged22)) %>% arrange(kilo, zone, bonus, make) #1874 * 7
+new.auto.b
+
+# interaction X
+logit.fit11 <- glm(cbind(claims, insured-claims) ~ kilo+zone+bonus+make, data=new.auto.b, family = binomial(link="logit"))
+
+logit.step11.aic <- step(logit.fit11, trace = FALSE)
+logit.step11.bic <- step(logit.fit11, trace = FALSE, k = log(m))
+
+# interaction O
+logit.fit22 <- glm(cbind(claims, insured-claims) ~ kilo+zone+bonus+make+kilo:zone+kilo:bonus+kilo:make+zone:bonus+zone:make+bonus:make, data=new.auto.b, family = binomial(link="logit"))
+
+logit.step22.aic <- step(logit.fit22, trace = FALSE)
+logit.step22.bic <- step(logit.fit22, trace = FALSE, k = log(m))
+
+#유사수준 그룹화 후
+logit.main.af <- rbind(extractAIC(logit.fit11), extractAIC(logit.step11.aic), extractAIC(logit.fit11, k=log(m)), extractAIC(logit.step11.bic, k=log(m)))
+
+logit.int.af <- rbind(extractAIC(logit.fit22), extractAIC(logit.step22.aic), extractAIC(logit.fit22, k=log(m)), extractAIC(logit.step22.bic, k=log(m)))
+```
+
+```{r message=FALSE, warning=FALSE}
+logit.main <- cbind(logit.main.bf, logit.main.af); colnames(logit.main)<-c("bf p", "bf value", "af p", "af value"); rownames(logit.main)<-c("AIC", "step AIC", "BIC", "step BIC")
+
+logit.int <- cbind(logit.int.bf, logit.int.af); colnames(logit.int)<-c("bf p", "bf value", "af p", "af value"); rownames(logit.int)<-c("AIC", "step AIC", "BIC", "step BIC")
+
+logit.main
+logit.int
+lmtest::lrtest(logit.fit11, logit.fit22) #p-value < 2.2e-16 이므로 귀무가설 기각. complex model 선택.
+```
+
+bonus를 categorical한 데이터를 유사수준 그룹화 전과 비교해보았을 때 logistic 모형에서는 interaction을 포함하고 유사수준 그룹화한 데이터를 통해 구한 모형이 전체 변수 개수도 줄었을 뿐더러 AIC와 BIC 모두 유사수준 그룹화하기 전보다 줄어든 모습을 확인할 수 있다. 따라서, bonus를 categorical한 데이터에서 최적 모형은 interaction을 포함하고 유사수준 그룹화한 데이터이다.  
+
+```{r message=FALSE, warning=FALSE}
+#i) bonus numerical
+automobile.bn <- automobile.n %>% filter(claims<=insured) %>% mutate_at(3, as.numeric)
+m <- sum(automobile.bn$insured)
+
+# interaction X
+logit.fit1n <- glm(cbind(claims, insured-claims) ~ kilo+zone+bonus+make, data=automobile.bn, family = binomial(link="logit"))
+
+logit.step1n.aic <- step(logit.fit1n, trace = FALSE)
+logit.step1n.bic <- step(logit.fit1n, trace = FALSE, k = log(m))
+
+
+# interaction O(1차)
+logit.fit2n <- glm(cbind(claims, insured-claims) ~ kilo+zone+bonus+make+kilo:zone+kilo:bonus+kilo:make+zone:bonus+zone:make+bonus:make, data=automobile.bn, family = binomial(link="logit"))
+
+logit.step2n.aic <- step(logit.fit2n, trace = FALSE)
+logit.step2n.bic <- step(logit.fit2n, trace = FALSE, k = log(m))
+
+#유사수준 그룹화 전
+logit.main.bfn <- rbind(extractAIC(logit.fit1n), extractAIC(logit.step1n.aic), extractAIC(logit.fit1n, k=log(m)), extractAIC(logit.step1n.bic, k=log(m)))
+
+logit.int.bfn <- rbind(extractAIC(logit.fit2n), extractAIC(logit.step2n.aic), extractAIC(logit.fit2n, k=log(m)), extractAIC(logit.step2n.bic, k=log(m)))
+```
+
+```{r message=FALSE, warning=FALSE}
+#유사수준 그룹화
+kilo.name <- paste0("kilo", 2:5)
+others <- c("zone", "bonus", "make")
+coef_names <- rownames(summary(logit.fit2n)$coef)
+
+# kilo.list를 초기화
+kilo.listn <- list()
+
+for (i in 1:length(kilo.name)) {
+    kilo.listn[[i]] <- list()
+    
+    for (j in 1:length(others)) {
+        coef_values <- round(summary(logit.fit2n)$coef[grep(kilo.name[i], grep(others[j], coef_namesn, value = TRUE), value = TRUE), 1], 2)
+        duplicated_values <- coef_values[coef_values %in% coef_values[duplicated(coef_values)]]
+        if (length(duplicated_values) > 0)
+          kilo.listn[[i]][[others[j]]] <- duplicated_values
+    }
+    names(kilo.listn)[i] <- kilo.name[i]
+}
+
+kilo.listn
+
+#kilo2:zone2,6 / kilo3:make4,9 / kilo4:make4,9
+
+merged11n<-automobile.bn %>% filter(kilo == 2 & zone %in% c(2,6)) %>% group_by(kilo, make) %>% dplyr::select(kilo, zone, make, bonus, insured, claims, payment) %>% mutate(bonus = mean(bonus), insured = sum(insured), claims = sum(claims), payment = sum(payment)) %>% filter(kilo == 2 & zone == 2) %>% ungroup() %>% distinct() #9 * 7
+
+merged22n<-automobile.bn %>% filter((kilo == 3 & make %in% c(4,9)) | (kilo == 4 & make %in% c(4,9))) %>% group_by(kilo, zone) %>% dplyr::select(kilo, zone, make, bonus, insured, claims, payment) %>% mutate(bonus = mean(bonus), insured = sum(insured), claims = sum(claims), payment = sum(payment)) %>% filter((kilo == 3 & make == 4) | (kilo == 4 | make == 4)) %>% ungroup() %>% distinct() #21 * 7
+
+
+merged.bn <- bind_rows(merged11n, merged22n)
+
+merged.bn <- merged.bn %>% mutate_at(1:3, as.numeric)
+
+merged.bn$zone[merged.bn$kilo == 2 & merged.bn$zone == 2] <- 26
+merged.bn$make[merged.bn$kilo == 3 & merged.bn$make == 4] <- 49
+merged.bn$make[merged.bn$kilo == 4 & merged.bn$make == 4] <- 49
+
+merged.bn <- merged.bn %>% mutate_at(1:3, factor)
+
+new.auto.bn <- automobile.bn %>% filter(!(kilo == 2 & zone %in% c(2,6)) & !(kilo == 3 & make %in% c(4,9)) & !(kilo == 4 & make %in% c(4,9))) %>% dplyr::select(kilo, zone, make, bonus, insured, claims, payment) %>% bind_rows(merged.bn) %>% arrange(kilo, zone, make) #1868 * 7
+new.auto.bn
+
+
+# interaction X
+logit.fit11n <- glm(cbind(claims, insured-claims) ~ kilo+zone+bonus+make, data=new.auto.bn, family = binomial(link="logit"))
+
+logit.step11n.aic <- step(logit.fit11n, trace = FALSE)
+logit.step11n.bic <- step(logit.fit11n, trace = FALSE, k = log(m))
+
+# interaction O
+logit.fit22n <- glm(cbind(claims, insured-claims) ~ kilo+zone+bonus+make+kilo:zone+kilo:bonus+kilo:make+zone:bonus+zone:make+bonus:make, data=new.auto.bn, family = binomial(link="logit"))
+
+logit.step22n.aic <- step(logit.fit22n, trace = FALSE)
+logit.step22n.bic <- step(logit.fit22n, trace = FALSE, k = log(m))
+
+#유사수준 그룹화 후
+logit.main.afn <- rbind(extractAIC(logit.fit11n), extractAIC(logit.step11n.aic), extractAIC(logit.fit11n, k=log(m)), extractAIC(logit.step11n.bic, k=log(m)))
+
+logit.int.afn <- rbind(extractAIC(logit.fit22n), extractAIC(logit.step22n.aic), extractAIC(logit.fit22n, k=log(m)), extractAIC(logit.step22n.bic, k=log(m)))
+```
+
+```{r message=FALSE, warning=FALSE}
+logit.mainn <- cbind(logit.main.bfn, logit.main.afn); colnames(logit.mainn)<-c("bf p", "bf value", "af p", "af value"); rownames(logit.mainn)<-c("AIC", "step AIC", "BIC", "step BIC")
+
+logit.intn <- cbind(logit.int.bfn, logit.int.afn); colnames(logit.intn)<-c("bf p", "bf value", "af p", "af value"); rownames(logit.intn)<-c("AIC", "step AIC", "BIC", "step BIC")
+
+logit.mainn
+logit.intn
+
+lmtest::lrtest(logit.fit11n, logit.fit22n) #p-value < 2.2e-16 이므로 귀무가설 기각. complex model 선택.
+```
+```{r message=FALSE, warning=FALSE}
+#(a) 최적 모형 결정
+
+# i) bonus numerical vs. categorical 결정
+lmtest::lrtest(logit.fit1n, logit.fit1) #main effect model
+
+lmtest::lrtest(logit.fit2n, logit.fit2) #interaction model
+```
+main effect model과 interaction model 모두 lrt에서 p-value가 매우 작은 것으로 보아bonus가 numerical일 때(nested model)보다 categorical일 때(full model) 더 유의하다는 것으로 해석할 수 있다. 따라서, bonus는 categorical로 처리한다.
+
+```{r message=FALSE, warning=FALSE}
+# ii) main vs. interaction model
+lmtest::lrtest(pois.fit11, pois.fit22)
+```
+main effect와 interaction model을 비교해보았을 때 p-value가 매우 작아 귀무가설을 기각할 수 있으므로 full model인 interaction model이 더 유의한 것으로 보인다. 또한, 유의수준 그룹화 전과 후의 AIC와 BIC를 보면 그룹화한 후의 AIC와 BIC가 모두 더 작으므로 유의수준 그룹화한 데이터를 선택한다. 따라서, **bonus를 categorical로 처리하고 유의수준 그룹화한 데이터를 바탕으로 한 interaction model**이 (b)의 최적 모형이라고 할 수 있다.
+
+
+### (c)
+```{r fig.height=15, fig.width=10, message=FALSE, warning=FALSE}
+pois.fit22c <- glm(claims/insured ~ kilo + zone + bonus + make + kilo:zone + kilo:bonus + kilo:make + zone:bonus + zone:make + bonus:make, data=new.auto, weight=insured, family=poisson(link ="log"))
+
+logit.fit22 <- glm(cbind(claims, insured-claims) ~ kilo+zone+bonus+make+kilo:zone+kilo:bonus+kilo:make+zone:bonus+zone:make+bonus:make, data=new.auto.b, family = binomial(link="logit"))
+
+
+lambda.bar <- with(new.auto, claims/insured)
+lambda.hat <- pois.fit22c$fitted.values
+
+#pearson.poi <- (lambda.bar - lambda.hat)/sqrt(lambda.hat/new.auto$insured)
+pearson.poi <- residuals(pois.fit22c, type="pearson")
+pearson.bin <- residuals(logit.fit22, type="pearson")
+
+dev.poi <- residuals(pois.fit22c, type="deviance")
+dev.bin <- residuals(logit.fit22, type="deviance")
+
+res.poi <- data.frame(pearson = pearson.poi, deviance = dev.poi)
+res.bin <- data.frame(pearson = pearson.bin, deviance = dev.bin)
+
+g1 <- ggplot(stack(res.poi)) + geom_boxplot(aes(y=values, fill=ind)) + labs(fill="residuals", x="") + ggtitle("Boxplot - Residuals of Poisson model") + facet_wrap(~ind, scale="free") + theme_minimal()
+g2 <- ggplot(stack(res.poi)) + geom_histogram(aes(x=values, col=ind, fill=ind), bins=40, alpha=0.7) + labs(fill="residuals",col="residuals", x="") + ggtitle("Histogram - Residuals of Poisson model") + facet_wrap(~ind, scale="free") + theme_minimal()
+g3 <- ggplot(stack(res.poi), aes(sample=values, group=ind, col=ind)) + geom_qq() + geom_qq_line(col="black", lty=2) +  labs(fill="residuals", x="") + ggtitle("Q-Q plot - Residuals of Poisson model") + facet_wrap(~ind, scale="free") + theme_minimal()
+grid.arrange(g1,g2,g3, nrow=3)
+
+p1 <- ggplot(stack(res.bin)) + geom_boxplot(aes(y=values, fill=ind)) + labs(fill="residuals", x="") + ggtitle("Boxplot - Residuals of Binomial model") + facet_wrap(~ind, scale="free") + theme_minimal()
+p2 <- ggplot(stack(res.bin)) + geom_histogram(aes(x=values, col=ind, fill=ind), bins=40, alpha=0.7) + labs(fill="residuals",col="residuals", x="") + ggtitle("Histogram - Residuals of Binomial model") + facet_wrap(~ind, scale="free") + theme_minimal()
+p3 <- ggplot(stack(res.bin), aes(sample=values, group=ind, col=ind)) + geom_qq() + geom_qq_line(col="black", lty=2) +  labs(fill="residuals", x="") + ggtitle("Q-Q plot - Residuals of Binomial model") + facet_wrap(~ind, scale="free") + theme_minimal()
+grid.arrange(p1,p2,p3, nrow=3)
+```
+
+### (d)
+두 모형 모두 적합도 면에서는 큰 차이를 보이지 않았으나 해당 데이터의 경우 총사고건수(claims)가 보험가입자수(insured)보다 많은 경우가 존재하였다. 이런 경우 이항 분포를 이용할 때 해당 관측치를 부득이하게 제외하고 모형을 적합해야 한다는 단점이 있다. 즉, 보험가입자수가 적어도 사고건수가 많았던 셀에 대해서는 모형 적합에 이용할 수 없다. 이에 반해 포아송 분포를 이용한 모형은 보험가입자수보다 사고건수가 많아도 이런 관측치에 영향을 받지 않아 데이터를 최대한 보존하여 이용해서 적합할 수 있다는 장점이 있다.
+
+
+### (e)
+```{r include=FALSE}
+automobile.e <- automobile %>% mutate_at(1:4, factor)
+
+merged1<-automobile.e %>% filter(c(kilo == 2 & bonus %in% c(5,6,7)) | c(kilo == 4 & bonus %in% c(3,7))) %>% group_by(kilo, zone, make) %>% mutate(insured = sum(insured), claims = sum(claims), payment = sum(payment)) %>% filter(c(kilo == 2 & bonus == 5) | c(kilo == 4 & bonus == 3)) %>% ungroup()
+
+merged2<-automobile.e %>% filter(kilo == 3 & make %in% c(4,9)) %>% group_by(kilo,zone,bonus) %>% mutate(insured = sum(insured), claims = sum(claims), payment = sum(payment)) %>% filter(kilo == 3 & make == 4) %>% ungroup()
+
+merged3<-automobile.e %>% filter(kilo == 5 & zone %in% c(3,6)) %>% group_by(kilo, bonus, make) %>% mutate(insured = sum(insured), claims = sum(claims), payment = sum(payment)) %>% filter(kilo == 5 & zone == 3) %>% ungroup()
+
+new.auto.e <- automobile.e %>% filter(!(kilo == 2 & bonus %in% c(5,6,7)) & !(kilo == 3 & make %in% c(4,9)) & !(kilo == 4 & bonus %in% c(3,7)) & !(kilo == 5 & zone %in% c(3,6))) %>% bind_rows(bind_rows(merged1,merged2,merged3)) %>% arrange(kilo, zone, bonus, make)
+
+new.auto.e <- new.auto.e %>% mutate_at(1:4, as.numeric)
+new.auto.e$bonus[new.auto.e$kilo == 2 & new.auto.e$bonus == 5] <- 567
+new.auto.e$make[new.auto.e$kilo == 3 & new.auto.e$make == 4] <-49
+new.auto.e$bonus[new.auto.e$kilo == 4 & new.auto.e$bonus == 3] <-37
+new.auto.e$zone[new.auto.e$kilo == 5 & new.auto.e$zone == 3] <-36
+new.auto.e <- new.auto.e %>% mutate_at(1:4, factor)
+```
+
+
+```{r message=FALSE, warning=FALSE}
+zero <- automobile.e %>% filter(insured==0)
+zero.pred <- predict(pois.fit22c, zero, type="response")
+zero.res <- round(zero.pred, 4)
+zero.res
+
+small <- automobile.e %>% filter(insured<20)
+table(small$claims)
+small.pred <- predict(pois.fit22c, small, type="response")
+small.res <- cbind(small$insured,small$claims,round(small$claims/small$insured,3), round(small.pred, 3))
+head(small.res)
+```
+
+### (f)
+```{r message=FALSE, warning=FALSE}
+set.seed(123)
+nb.fit <- glm.nb(claims~ offset(log(insured)) + kilo + zone + bonus + make + kilo:zone + kilo:bonus + kilo:make + zone:bonus + zone:make + bonus:make, data=new.auto[,1:6])
+summary(nb.fit)
+
+fitted <- data.frame(poisson = pois.fit22$fitted.values, nb = nb.fit$fitted.values)
+ggplot(fitted, aes(x=poisson, y=nb)) + geom_point() + geom_abline(aes(intercept=0, slope=1), col="blue", lty=2) + ggtitle("predict values: poisson vs negative binomial") + theme_minimal()
+```
+
+
+
+
+
+
+
+
+
