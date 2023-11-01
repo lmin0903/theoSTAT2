@@ -1,0 +1,238 @@
+---
+title: "[Part 3] 할증보험료 자동계산 application 개발"
+output:
+  html_document:
+    fig_height: 5
+    fig_width: 8
+    highlight: textmate
+    theme: cosmo
+    df_print: paged
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r include=FALSE}
+library(optimx)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(readxl)
+library(leaps)
+library(MASS)
+library(kableExtra)
+library(reshape2)
+library(lubridate)
+library(readr)
+library(scales)
+library(patchwork)
+library(forecast)
+library(ggfortify)
+library(ggpubr)
+options(scipen=99)
+```
+
+### 데이터 세팅
+
+```{r message=FALSE, warning=FALSE}
+setwd("~/Desktop/2023-2/이론통계학II/HW6")
+# 데이터 불러오기
+sweden <- read_excel("1977-스웨덴자동차 보험_1956-캐나다자동차보험자료.xlsx")
+names(sweden) <- c("kilo", "zone", "bonus", "make", "insured", "claims", "payment")
+sweden$kilo <- as.factor(sweden$kilo)
+sweden$zone <- as.factor(sweden$zone)
+sweden$bonus <- as.factor(sweden$bonus)
+sweden$make <- as.factor(sweden$make)
+#summary(sweden)
+sweden0<-sweden[sweden$claims>0,]
+### 파트1 ###
+automobile.n<-sweden[sweden$insured>0,]
+merged1<-automobile.n %>% filter(c(kilo == 2 & bonus %in% c(5,6,7)) | c(kilo == 4 & bonus %in% c(3,7))) %>% group_by(kilo, zone, make) %>% mutate(insured = sum(insured), claims = sum(claims), payment = sum(payment)) %>% filter(c(kilo == 2 & bonus == 5) | c(kilo == 4 & bonus == 3)) %>% ungroup()
+
+merged2<-automobile.n %>% filter(kilo == 3 & make %in% c(4,9)) %>% group_by(kilo,zone,bonus) %>% mutate(insured = sum(insured), claims = sum(claims), payment = sum(payment)) %>% filter(kilo == 3 & make == 4) %>% ungroup()
+
+merged3<-automobile.n %>% filter(kilo == 5 & zone %in% c(3,6)) %>% group_by(kilo, bonus, make) %>% mutate(insured = sum(insured), claims = sum(claims), payment = sum(payment)) %>% filter(kilo == 5 & zone == 3) %>% ungroup()
+
+new.auto <- automobile.n %>% filter(!(kilo == 2 & bonus %in% c(5,6,7)) & !(kilo == 3 & make %in% c(4,9)) & !(kilo == 4 & bonus %in% c(3,7)) & !(kilo == 5 & zone %in% c(3,6))) %>% bind_rows(bind_rows(merged1,merged2,merged3)) %>% arrange(kilo, zone, bonus, make)
+
+new.auto <- new.auto %>% mutate_at(1:4, as.numeric)
+new.auto$bonus[new.auto$kilo == 2 & new.auto$bonus == 5] <- 567
+new.auto$make[new.auto$kilo == 3 & new.auto$make == 4] <-49
+new.auto$bonus[new.auto$kilo == 4 & new.auto$bonus == 3] <-37
+new.auto$zone[new.auto$kilo == 5 & new.auto$zone == 3] <-36
+new.auto <- new.auto %>% mutate_at(1:4, factor)
+
+#glm_poiss<-glm(claims ~ offset(log(insured)) + kilo + zone + bonus + make + kilo:zone + kilo:bonus + kilo:make + zone:bonus + zone:make + bonus:make, family=poisson(link ="log"), data = new.auto)
+#####최종모델#####
+glm_poiss<-glm(claims/insured ~ kilo + zone + bonus + make + kilo:zone + kilo:bonus + kilo:make + zone:bonus + zone:make + bonus:make, weights = insured, family=poisson(link ="log"), data = new.auto)
+
+
+### 파트2 ####
+aaa<-sweden
+levels(aaa$zone)<-c(levels(aaa$zone),"45","24")
+levels(aaa$make)<-c(levels(aaa$make),"23","28")
+
+aaa$zone[aaa$kilo==2 & (aaa$zone==4 | aaa$zone==5)]<-"45"
+aaa$zone[aaa$kilo==4 & (aaa$zone==2 | aaa$zone==4)]<-"24"
+aaa$make[aaa$kilo==3 & (aaa$make==2 | aaa$make==3)]<-"23"
+aaa$make[aaa$kilo==5 & (aaa$make==2 | aaa$make==8)]<-"28"
+
+bbb<-aggregate(cbind(claims,payment)~kilo+make+zone+bonus, aaa, sum)
+sweden00<-bbb[bbb$claims>0,]
+
+myGLM1<-glm(payment/claims~kilo+bonus+make+zone
+            + kilo:bonus + kilo:make + kilo:zone + bonus:make + bonus:zone + make:zone, 
+            family = Gamma(link="log"), weights = claims, data=sweden00)
+#####최종모델#####
+glm_gamma<-step(myGLM1, direction="backward", trace=F)
+```
+
+### a) 
+
+<b><span style='background-color: #fff5b1; font-size:120%'>최종 모델</span></b>
+
+
+```{r}
+glm_poiss #데이터 new.auto(1856*7)
+glm_gamma #데이터 sweden00(1616*7)
+```
+
+
+=> kable로 계수 앞뒤로 열개만 표로 출력
+
+=> fitted(pois) * fitted(gamma) 경우 별로 몇 개 뽑기
+
+
+```{r}
+aaaa<-glm_poiss$coefficients[c(1:11,301:308)] %>% round(3) %>% as.data.frame() 
+bbbb<-glm_gamma$coefficients[c(1:11,218:225)] %>% round(3) %>% as.data.frame()
+data.frame(aaaa,bbbb) %>% kable(row.names = T, col.names = c("Poisson GLM", "Gamma GLM")) %>% kable_styling("striped", full_width = F) %>% column_spec(1, bold=T)%>% kable_classic_2() %>% row_spec(c(5,11), hline_after = T,extra_css = "border-bottom: 1px solid;") 
+
+aaaa<-glm_poiss$coefficients[c(298:308)] %>% round(3) %>% as.data.frame() 
+bbbb<-glm_gamma$coefficients[c(215:225)] %>% round(3) %>% as.data.frame()
+data.frame(aaaa,bbbb) %>% kable(row.names = T, col.names = c("Poisson GLM", "Gamma GLM")) %>% kable_styling("striped", full_width = F) %>% column_spec(1, bold=T)%>% kable_classic_2() %>% row_spec(3, hline_after = T,extra_css = "border-bottom: 1px solid;") 
+
+
+data.frame(fitted(glm_poiss)[1:1616], fitted(glm_gamma), fitted(glm_poiss)[1:1616]*fitted(glm_gamma))[1:8,]  %>% round(3) %>% kable(col.names = c("Number of Claims", "Size of Claims", "Premium"),align = "rrrr") %>% kable_styling("striped") %>% kable_classic_2()
+```
+
+
+
+### b) 손해율
+
+```{r fig.height=5, fig.width=2, message=FALSE, warning=FALSE}
+kil <- rep(1:5, rep(7*7*9, 5))
+zone <- rep(rep(1:7, rep(7*9, 7)),5)
+bonus <- rep(rep(1:7, rep(9, 7)), 5*7)
+make <- rep(1:9, 5*7*7)
+data <- data.frame(cbind(kil, zone, bonus, make))
+colnames(data) <- colnames(sweden)[1:4]
+data[,colnames(data)] <- lapply(data[,colnames(data)], factor)
+data <- data %>% left_join(sweden)
+
+for_lambda<-for_mu<-data
+#람다용 데이터
+levels(for_lambda$bonus)<-c(levels(for_lambda$bonus),"567", "37")
+levels(for_lambda$make)<-c(levels(for_lambda$make),"49")
+levels(for_lambda$zone)<-c(levels(for_lambda$zone),"36")
+for(i in 1:2205){
+  if(for_lambda$kilo[i]==2){
+    if(for_lambda$bonus[i] %in% c(5,6,7)){
+      for_lambda$bonus[i]<-"567"
+    }
+  }
+}
+for(i in 1:2205){
+  if(for_lambda$kilo[i]==3){
+    if(for_lambda$make[i] %in% c(4,9)){
+      for_lambda$make[i]<-"49"
+    }
+  }
+}
+for(i in 1:2205){
+  if(for_lambda$kilo[i]==4){
+    if(for_lambda$bonus[i] %in% c(3,7)){
+      for_lambda$bonus[i]<-"37"
+    }
+  }
+}
+for(i in 1:2205){
+  if(for_lambda$kilo[i]==5){
+    if(for_lambda$zone[i] %in% c(3,6)){
+      for_lambda$zone[i]<-"36"
+    }
+  }
+}
+
+
+#뮤 데이터
+levels(for_mu$zone)<-c(levels(for_mu$zone),"45","24")
+levels(for_mu$make)<-c(levels(for_mu$make),"23","28")
+for(i in 1:2205){
+  if(for_mu$kilo[i]==2){
+    if(for_mu$zone[i] %in% c(4,5)){
+      for_mu$zone[i]<-"45"
+    }
+  }
+}
+for(i in 1:2205){
+  if(for_mu$kilo[i]==3){
+    if(for_mu$make[i] %in% c(2,3)){
+      for_mu$make[i]<-"23"
+    }
+  }
+}
+for(i in 1:2205){
+  if(for_mu$kilo[i]==4){
+    if(for_mu$zone[i] %in% c(2,4)){
+      for_mu$zone[i]<-"24"
+    }
+  }
+}
+for(i in 1:2205){
+  if(for_mu$kilo[i]==5){
+    if(for_mu$make[i] %in% c(2,8)){
+      for_mu$make[i]<-"28"
+    }
+  }
+}
+
+data["lambda"] <- predict(glm_poiss, for_lambda, type="response")
+data["mu"] <- predict(glm_gamma, for_mu, type="response")
+data["premium"] <- data$lambda*data$mu
+#data["pre_month"] <- round(data$premium/12/100)*100
+data["loss"] <- data$payment/(data$insured*data$premium)
+
+na.omit(data) %>% filter(claims>5) %>% ggplot() + geom_boxplot(aes(y=loss)) + theme_minimal()
+```
+
+```{r}
+na.omit(data) %>% filter(claims>5) %>% ggplot() + geom_histogram(aes(loss), fill="indianred1",bins=50, alpha=0.8) + theme_minimal()
+
+summary(data$loss)
+```
+
+
+### c)
+
+
+```{r}
+total.loss <- sum(data$payment, na.rm = TRUE)/sum(data$insured*data$premium, na.rm = TRUE)
+total.loss
+```
+
+### d)
+
+```{r fig.height=2, fig.width=7, message=FALSE, warning=FALSE}
+data %>% mutate(simple.premium =payment/insured ) -> result
+
+result %>% filter(insured<5) %>% gather(key="key",value= "value",simple.premium,premium) %>%
+  ggplot() + geom_boxplot(aes(value, fill=key), alpha = 0.5) + xlim(0,1000) + 
+  scale_fill_manual(values = c("indianred1", "royalblue1"),labels = c("Estimated", "Simple")) + theme_minimal()
+
+result %>% filter(insured<5) %>% gather(key="key",value= "value",simple.premium,premium) %>%
+  ggplot() + geom_density(aes(value,fill=key),alpha = 0.5)+xlim(0,2000)+
+  scale_fill_manual(values = c("indianred1", "royalblue1"),labels=c("Estimated","Simple")) + theme_minimal()
+```
+
+

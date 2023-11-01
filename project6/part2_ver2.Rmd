@@ -1,0 +1,307 @@
+---
+title: "[Part 2] 사고심도 GLM Moddel"
+output:
+  html_document:
+    fig_height: 5
+    fig_width: 8
+    highlight: textmate
+    theme: cosmo
+    df_print: paged
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r include=FALSE}
+library(optimx)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(readxl)
+library(leaps)
+library(MASS)
+library(kableExtra)
+library(reshape2)
+library(lubridate)
+library(readr)
+library(scales)
+library(patchwork)
+library(forecast)
+library(ggfortify)
+library(ggpubr)
+options(scipen=99)
+```
+
+### 데이터 세팅
+
+```{r message=FALSE, warning=FALSE}
+setwd("~/Desktop/2023-2/이론통계학II/HW6")
+# 데이터 불러오기
+sweden <- read_excel("1977-스웨덴자동차 보험_1956-캐나다자동차보험자료.xlsx")
+names(sweden) <- c("kilo", "zone", "bonus", "make", "insured", "claims", "payment")
+sweden$kilo <- as.factor(sweden$kilo)
+sweden$zone <- as.factor(sweden$zone)
+sweden$bonus <- as.factor(sweden$bonus)
+sweden$make <- as.factor(sweden$make)
+summary(sweden)
+sweden0<-sweden[sweden$claims>0,]
+```
+
+
+
+### 1-1) gamma glm(bonus=factor)
+
+```{r}
+myGLM0<-glm(payment/claims~kilo+bonus+make+zone
+            + kilo:bonus + kilo:make + kilo:zone
+            + bonus:make + bonus:zone + make:zone, 
+            family = Gamma(link="log"), weights = claims, data=sweden0)
+
+myGLM0
+myGLM_step<-step(myGLM0, direction="backward")
+```
+
+
+
+```{r}
+kilo.name <- paste0("kilo", 2:5)
+others <- c("zone", "bonus", "make")
+coef_names <- rownames(summary(myGLM0)$coef)
+
+# kilo.list를 초기화
+kilo.list <- list()
+
+for (i in 1:length(kilo.name)) {
+  # 각 kilo.name에 대한 하위 리스트를 초기화
+  kilo.list[[i]] <- list()
+
+  for (j in 1:length(others)) {
+    # 정규 표현식 패턴을 만들어서 값을 할당
+    kilo.list[[i]][[others[j]]] <- sort(round(summary(myGLM0)$coef[grep(kilo.name[i], grep(others[j], coef_names, value = TRUE), value = TRUE), 1], 4), decreasing=TRUE)
+  }
+  names(kilo.list)[i] <- kilo.name[i]
+}
+
+kilo.list
+```
+
+
+
+kilo2 > zone4 + zone5
+
+
+kilo3 > make2 + make3
+
+
+kilo4 > zone2 + zone4
+
+
+kilo5 > make2 + make8
+
+
+```{r}
+aaa<-sweden
+
+#aaa %>% filter(kilo==2 & (zone==4 | zone==5))
+
+levels(aaa$zone)<-c(levels(aaa$zone),"45","24")
+levels(aaa$make)<-c(levels(aaa$make),"23","28")
+
+aaa$zone[aaa$kilo==2 & (aaa$zone==4 | aaa$zone==5)]<-"45"
+aaa$zone[aaa$kilo==4 & (aaa$zone==2 | aaa$zone==4)]<-"24"
+aaa$make[aaa$kilo==3 & (aaa$make==2 | aaa$make==3)]<-"23"
+aaa$make[aaa$kilo==5 & (aaa$make==2 | aaa$make==8)]<-"28"
+
+summary(aaa$zone)
+summary(aaa$make)
+summary(sweden$zone)
+summary(sweden$make)
+
+bbb<-aggregate(cbind(claims,payment)~kilo+make+zone+bonus, aaa, sum)
+sweden00<-bbb[bbb$claims>0,]
+
+myGLM1<-glm(payment/claims~kilo+bonus+make+zone
+            + kilo:bonus + kilo:make + kilo:zone + bonus:make + bonus:zone + make:zone, 
+            family = Gamma(link="log"), weights = claims, data=sweden00)
+
+myGLM1
+AIC(myGLM1)
+BIC(myGLM1)
+myGLM_step<-step(myGLM1, direction="backward")
+#myGLM_step2<-step(myGLM1, direction="backward", k = log(nrow(sweden00)))
+myGLM_step2<-step(myGLM1, direction="backward", k = log(113171))
+
+
+BIC(step(myGLM1, direction="backward", k = log(113171)))
+BIC(myGLM_step2) #그룹화 + 스텝 후
+AIC(myGLM_step)
+#AIC(myGLM0) # 그룹화 전
+#BIC(myGLM0)
+```
+
+
+<span style='background-color: #fff5b1; font-size:120%'>그룹화 결과 AIC 1863828 -> 1848753, BIC 1864848 -> 1849884(1851403)</span>
+
+
+∴ payment/claims ~ kilo + bonus + make + zone + kilo:bonus + kilo:make + 
+    kilo:zone + bonus:make + bonus:zone
+
+### 1-2) gamma glm(bonus=numeric)
+
+```{r}
+sweden <- read_excel("1977-스웨덴자동차 보험_1956-캐나다자동차보험자료.xlsx")
+names(sweden) <- c("kilo", "zone", "bonus", "make", "insured", "claims", "payment")
+sweden$kilo <- as.factor(sweden$kilo)
+sweden$zone <- as.factor(sweden$zone)
+#sweden$bonus <- as.factor(sweden$bonus)
+sweden$make <- as.factor(sweden$make)
+summary(sweden)
+sweden2<-sweden[sweden$claims>0,]
+myGLM2<-glm(payment/claims~kilo+bonus+make+zone
+            + kilo:bonus + kilo:make + kilo:zone
+            + bonus:make + bonus:zone + make:zone, 
+            family = Gamma(link="log"), weights = claims, data=sweden2)
+
+myGLM2
+myGLM_step2<-step(myGLM2, direction="backward") #1869874 -> 1873661
+```
+
+
+
+```{r}
+kilo.name <- paste0("kilo", 2:5)
+others <- c("zone", "bonus", "make")
+coef_names <- rownames(summary(myGLM2)$coef)
+
+# kilo.list를 초기화
+kilo.list <- list()
+
+for (i in 1:length(kilo.name)) {
+  # 각 kilo.name에 대한 하위 리스트를 초기화
+  kilo.list[[i]] <- list()
+
+  for (j in 1:length(others)) {
+    # 정규 표현식 패턴을 만들어서 값을 할당
+    kilo.list[[i]][[others[j]]] <- sort(round(summary(myGLM2)$coef[grep(kilo.name[i], grep(others[j], coef_names, value = TRUE), value = TRUE), 1], 4), decreasing=TRUE)
+  }
+  names(kilo.list)[i] <- kilo.name[i]
+}
+
+kilo.list
+```
+
+
+
+kilo3 > zone2 + zone4
+
+
+kilo4 > zone2 + zone4
+
+
+kilo5 > zone3 + zone4
+
+
+```{r}
+aaa1<-sweden
+
+levels(aaa1$zone)<-c(levels(aaa1$zone),"24","34")
+
+aaa1$zone[aaa1$kilo==3 & (aaa1$zone==2 | aaa1$zone==4)]<-"24"
+aaa1$zone[aaa1$kilo==4 & (aaa1$zone==2 | aaa1$zone==4)]<-"24"
+aaa1$zone[aaa1$kilo==5 & (aaa1$zone==3 | aaa1$zone==4)]<-"34"
+
+summary(aaa1$zone)
+summary(sweden$zone)
+
+bbb1<-aggregate(cbind(claims,payment)~kilo+make+zone+bonus, aaa1, sum)
+sweden01<-bbb1[bbb1$claims>0,]
+
+myGLM11<-glm(payment/claims~kilo+bonus+make+zone
+            + kilo:bonus + kilo:make + kilo:zone + bonus:make + bonus:zone + make:zone, 
+            family = Gamma(link="log"), weights = claims, data=sweden01)
+
+myGLM11
+
+AIC(myGLM11) #그룹화 후 스텝 전
+BIC(myGLM11) #그룹화 후 스텝 전
+myGLM_step11<-step(myGLM11, direction="backward")
+#myGLM_step21<-step(myGLM11, direction="backward", k = log(nrow(sweden0)))
+myGLM_step21<-step(myGLM11, direction="backward", k = log(113171))
+BIC(myGLM_step21)  #그룹화 후 BIC 기준 스텝 후
+AIC(myGLM_step11)  #그룹화 후 AIC 기준 스텝 후
+#그룹화 전
+AIC(myGLM2)
+BIC(myGLM2)
+```
+
+
+<span style='background-color: #fff5b1; font-size:120%'>그룹화 결과 AIC 1869874 -> 1863621, BIC 1870659 -> 1864123</span>
+
+
+∴ payment/claims ~ kilo + bonus + make + zone + kilo:bonus + kilo:make + 
+    kilo:zone + bonus:make + bonus:zone
+
+**최종 모형은 categorical + interaction 포함 + 그룹화 (`AIC(myGLM_step)`)**
+
+```{r}
+glm_gamma<-myGLM_step
+```
+
+
+
+### 2) 잔차 boxplot + histogram + normal Q-Q 
+
+최종 쓰는 데이터는 `sweden00`
+
+```{r fig.height=8, fig.width=6}
+y_hat<-glm_gamma$fitted.values
+y_bar<-sweden00$payment/sweden00$claims
+
+r_pearson<-residuals(glm_gamma, type="pearson")
+r_deviance<-residuals(glm_gamma, type="deviance")
+residuals<-data.frame(r_pearson, r_deviance)
+
+
+### boxplot
+g1 <- ggplot(residuals) + geom_boxplot(aes(y=r_pearson)) + labs(title='Pearson') + theme_minimal()
+g2 <- ggplot(residuals) + geom_boxplot(aes(y=r_deviance)) + labs(title='Deviance') + theme_minimal()
+
+
+### histogram
+g3 <- ggplot(residuals) + geom_histogram(aes(x=r_pearson), bins = 30) + labs(title='Pearson')+ theme_minimal()
+g4 <- ggplot(residuals) + geom_histogram(aes(x=r_deviance), bins = 30) + labs(title='Deviance')+ theme_minimal()
+
+
+### normal Q-Q Plot
+g5 <- ggplot(residuals, aes(sample=r_pearson)) + stat_qq() + stat_qq_line() + labs(title='Pearson')+ theme_minimal()
+g6 <- ggplot(residuals, aes(sample=r_deviance)) + stat_qq() + stat_qq_line() + labs(title='Deviance')+ theme_minimal()
+
+grid.arrange(g1, g2, g3, g4, g5, g6, ncol=2)
+```
+
+
+
+### 3)
+
+
+```{r}
+sweden$bonus<-as.factor(sweden$bonus)
+y_hat0<-predict(glm_gamma, newdata = sweden, type = "response")
+y_bar0<-sweden$payment/sweden$claims
+aa<-data.frame(sweden, round(y_bar0,3), round(y_hat0,3))
+aa[c(398,399,400,2104,2155,632,1514),] %>% dplyr::select(claims, payment, round.y_bar0..3., round.y_hat0..3.) %>% kable(row.names = T, col.names = c("Claims", "Payment", "Simple", "Estimated")) %>% kable_styling("striped",full_width = F) %>% column_spec(1,bold = T) %>% kable_classic_2() %>% row_spec(c(3,5), hline_after = T,extra_css = "border-bottom: 1px solid;")
+```
+
+
+```{r eval=FALSE, include=FALSE}
+summary(sweden00$claims) #작다의 기준을 10으로 설정
+small <- sweden %>% filter(claims<700)
+small.pred <- predict(glm_gamma, newdata = small, type = "response")
+small.result <- cbind(small$Claims,small$Payment,round(small$Payment/small$Claims,3), round(small.pred, 3))
+```
+
+
+
+
+
+
