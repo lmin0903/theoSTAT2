@@ -1,0 +1,780 @@
+---
+title: "이론통계학2 Project#7"
+author: "232STG13 서민지"
+output: 
+  html_document: 
+    df_print: kable
+    theme: paper
+    toc: yes
+    toc_float: yes
+---
+
+```{r include=FALSE}
+setwd("C:/Users/서민지/Desktop/통계 대학원/2023-2/이론통계학2/Project 7")
+library(readxl); library(tidyverse); library(GGally); library(ggplot2); library(gridExtra); library(lubridate); library(bestglm); library(ROCR); library(gam); library(MASS); library(caret); library(e1071); library(kknn); library(class);library(survival); library(survminer); library(mltools); library(data.table); library(reshape);
+library(kableExtra); library(devtools); library(nnet); library(NeuralNetTools); library(xgboost); library(randomForest); library(Epi)
+options(scipen=500)
+```
+
+```{r}
+#full data 살펴보기
+full.data <- read_excel("과제#7-SAS보험이탈자료-분석용.xls", sheet = 1); dim(full.data)
+
+##지급만기일자 중 2월 29일이 잘못 기재되어 있는 경우 2월 28일로 변경##
+
+for (i in 1:nrow(full.data)) {
+  if (substr(full.data[i,"계약일자"], 5, 8) == "0229") { full.data[i,"계약일자"] <- paste0(substr(full.data[i,"계약일자"], 1, 7), "8") }
+  if (substr(full.data[i,"지급만기일자"], 5, 8) == "0229") { full.data[i,"지급만기일자"] <- paste0(substr(full.data[i,"지급만기일자"], 1, 7), "8") }
+}
+
+full.data$계약일자<-as.Date(full.data$계약일자, format = "%Y%m%d")
+full.data$지급만기일자<-as.Date(full.data$지급만기일자, format = "%Y%m%d")
+
+
+##기존변수 type 지정##
+#factor: 납입방법, 수금방법, 부활유무, 상품중분류, 상품소분류 (5)
+#date: 계약일자, 지급만기일자 (2)
+#numeric: 가입연령, 납입기간/년, 보험료, 최종납입횟수 (4)
+
+full.data <- full.data %>% mutate_at(c(3,5,7,11,12), factor) %>% mutate(계약일자 = as.Date(계약일자, format = c("%Y%m%d")), 지급만기일자 = as.Date(지급만기일자, format = c("%Y%m%d")))
+
+## 지급만기일자 >= "2001-10-01" filtering (이미 만기된 건에 대해서 제거: train 7, test 3으로 총 10개 행 제거 --> 9990개 행만 남음)
+full.data <- full.data %>% filter(지급만기일자 >= as.Date("2001-10-01"))
+```
+
+```{r fig.height=15, fig.width=15, message=FALSE}
+#기존변수 EDA
+
+#ggpairs(full.data[,2:12])
+```
+
+
+**새로운 파생변수 생성**
+1. 기간 관련
+계약기간(만기일자-계약일자), 경과기간(2001년 6월 30일 - 계약일자), 무만기 여부(9999 or not), 납입간격(12/연간납입횟수), 실질 납입만기(가입연령이 max인 85세인 obs.의 만기나이가 90세이므로 무만기인 경우 90세로 만기 나이 설정), 납입 년수=납입기간/년, 잔여만기/년(실질만기기준), (이상적납입횟수(60) - 최종납입횟수(55)) x 납입간격(3개월) = 미납기간/월 (15개월) 
+2. 연령 관련
+생애주기(청소년-10대, 청년-29세 이하, 중년-49세 이하, 장년-64세 이하, 노년 65세 이상), 만기 시 연령=가입연령+(실질만기년-계약년), 현재 나이=가입연령+(2001-계약년)
+3. 보험료 관련
+이상적 납입 보험료=이상적 납입횟수 * 보험료, 미납 보험료, 잔여 납입 보험료(2001년 6월 30일부터 만기까지의 보험료)
+4. 외부변수
+금리(계약일자 기준 년도 금리), 2001년도 기준 사망확률
+5. 횟수 관련 변수
+이상적 납입횟수 - 최종납입횟수 = 미납 횟수, 납입기간*12 / 연간 납입횟수 = 이상적 납입횟수, 연간 납입횟수(12:월납, 4:3개월납, 2:6개월납, 1:연납)
+
+```{r}
+### 지급만기일자 중 9999를 실만기일자로 만들기
+## 2001년 기준 현재연령
+full.data <- full.data %>% mutate("현연령" = interval(full.data$계약일자, as.Date("2001-06-30")) %/% years(1) + full.data$가입연령 + 1, "무만기 여부" = as.factor(ifelse(year(지급만기일자)=="9999",1,0)))
+
+life.table <- read.csv("완전생명표_1세별__20231102201722.csv", fileEncoding = "euc-kr", skip=1) %>% dplyr::select(1:3) %>% `colnames<-`(c("age","기대여명","사망확률"))
+
+full.data$`실제만기년도`<-0
+for(i in 1:nrow(full.data)){
+  if(full.data$`무만기 여부`[i]==1){full.data$`실제만기년도`[i]=floor(life.table[full.data$현연령[i]+1,"기대여명"])+2001}
+  else {full.data$`실제만기년도`[i] <- year(full.data$`지급만기일자`[i])}
+}
+
+# 실제만기일자 계산 시 계약일자의 2월 29일을 가져오면서 NA가 뜨는 경우가 있음 --> 이런 경우만 지급만기일자에서의 월일을 가져오도록 함
+
+full.data$`실제만기일자` <- as.Date(paste0(substr(full.data$`실제만기년도`,1,4),substr(full.data$지급만기일자,5,10)))
+
+full.data <- full.data %>% dplyr::select(-실제만기년도)
+
+
+
+
+# 
+# 
+# full.data$`기대여명`<-0
+# for(i in 1:10000){
+#   full.data$기대여명[i] <- life.table[full.data$현연령[i]+1,"기대여명"]}
+# plot(full.data$현연령, full.data$기대여명) #완벽한 음의 상관관계 하하
+# 
+# 
+# full.data$`사망확률`<-0
+# for(i in 1:10000){
+#   full.data$사망확률[i] <- life.table[full.data$현연령[i]+1,"사망확률"]}
+# plot(full.data$현연령, full.data$사망확률) #혹시 몰라 넣어본 사망확률은 지수적 증가
+```
+
+```{r}
+#가입연령층 factor
+full.data$가입연령층 <- 0
+for(i in 1:nrow(full.data)){
+  if(full.data$가입연령[i]<20){full.data$가입연령층[i]<-1}
+  else if(full.data$가입연령[i]<30){full.data$가입연령층[i]<-2}
+  else if(full.data$가입연령[i]<40){full.data$가입연령층[i]<-3}
+  else if(full.data$가입연령[i]<50){full.data$가입연령층[i]<-4}
+  else if(full.data$가입연령[i]<65){full.data$가입연령층[i]<-5}
+  else {full.data$가입연령층[i]<-6}
+}
+full.data$가입연령층<-as.numeric(full.data$가입연령층)
+
+#현연령층 factor
+full.data$현연령층 <- 0
+for(i in 1:nrow(full.data)){
+  if(full.data$현연령[i]<20){full.data$현연령층[i]<-1}
+  else if(full.data$현연령[i]<30){full.data$현연령층[i]<-2}
+  else if(full.data$현연령[i]<40){full.data$현연령층[i]<-3}
+  else if(full.data$현연령[i]<50){full.data$현연령층[i]<-4}
+  else if(full.data$현연령[i]<65){full.data$현연령층[i]<-5}
+  else {full.data$현연령층[i]<-6}
+}
+full.data$현연령층<-as.numeric(full.data$현연령층)
+```
+
+##납입기간종류: 전기납, 단기납, 일시납 factor
+
+1. 납입기간/년 = interval --> 전기납 (보험기간의 전 기간에 걸쳐 보험료 납입)
+1-1. 납입기간/년 == 99 then interval로 대체해서 전기납으로 설정
+
+2. 납입기간/년 < interval --> 단기납 (보험기간보다 짧은 기간 동안 보험료 납입) or 일시납
+
+2-1. 일시납이려면 최종납입횟수 == 1 & 납입기간/년 = = 1 & 부활유무 == 0 으로 필터링 후
+&
+계약일자가 아래일 경우
+연납: 1998년 6월 30일 이하일 경우 '일시납'
+6월납: 1999년 12월 30일 이하일 경우 '일시납'
+3월납: 2000년 9월 30일 이하일 경우 '일시납'
+월납: 2001년 3월 30일 이하일 경우 '일시납'
+
+```{r}
+# #1-1. 납입기간/년 == 99 이면 interval(계약일자, 실제만기일자)로 대체해 전기납으로 설정
+# full.data[which(full.data$`납입기간/년` == 99),] #6개의 obs
+# 
+# for(i in which(full.data$`납입기간/년` == 99)){
+#   full.data$`납입기간/년`[i] <- interval(full.data$계약일자[i], full.data$실제만기일자[i]) %/% years(1)
+# }
+# 
+# full.data[which(full.data$`납입기간/년` == 99),] #99가 기대여명을 반영한 실제만기일자의 납입기간으로 변경된 것을 확인할 수 있음
+full.data <- full.data[which(full.data$`납입기간/년` != 99),] #9984 rows
+
+
+# full.data$납입기간종류 <- 0
+# 
+# for (i in 1:10000){
+#   if(full.data$`납입기간/년`[i] == interval(full.data$계약일자[i] - full.data$실제만기일자[i])){
+#     full.data$납입기간종류[i] <- "전기납"
+#   }
+#   else if(full.data$`납입기간/년`[i] < interval(full.data$계약일자[i] - full.data$실제만기일자[i])){
+#     if ((full.data$최종납입횟수[i] == 1) & (full.data$`납입기간/년`[i] == 1) & (full.data$부활유무[i] == 0)){
+#       full.data$납입기간종류[i] <- "일시납"
+#     }
+#     else {full.data$납입기간종류[i] <- "단기납"}
+#   }
+# }
+```
+
+
+```{r}
+full.data$`총계약월수` <- interval(full.data$계약일자, full.data$`실제만기일자`) %/% months(1)
+
+#계약일자로부터 납입을 얼마나 해야 했는가 (이상적) : 총경과월수
+full.data$`총경과월수` <- 0
+
+for (i in 1:nrow(full.data)){
+  if ((full.data$계약일자[i] + years(full.data$`납입기간/년`[i]))  >= as.Date("2001-06-30")){
+      full.data$총경과월수[i] <- interval(full.data$계약일자[i], as.Date("2001-06-30")) %/% months(1)}
+  else {full.data$총경과월수[i] <- full.data$`납입기간/년`[i] * 12}}
+```
+
+```{r}
+## 납입간격
+full.data$`납입간격`<-0
+for(i in 1:nrow(full.data)){
+  if(full.data[i,3]==1){full.data$`납입간격`[i]<-1}
+  else if(full.data[i,3]==2){full.data$`납입간격`[i]<-3}
+  else if(full.data[i,3]==3){full.data$`납입간격`[i]<-6}
+  else if(full.data[i,3]==4){full.data$`납입간격`[i]<-12}
+}
+## 납입했어야 하는 횟수
+full.data$`이상적횟수`<-floor(full.data$`총경과월수`/full.data$`납입간격`)+1
+
+## 미납횟수
+full.data$`미납횟수`<-full.data$`이상적횟수`- full.data$최종납입횟수
+
+## 최종납입개월수
+full.data$최종납입개월수 <- full.data$최종납입횟수 * full.data$납입간격
+
+head(full.data)
+```
+
+```{r}
+#최대 퐁당퐁당횟수
+full.data$`최대미납허용횟수`<-full.data$`이상적횟수`-floor((full.data$`이상적횟수`-1)/3)-1
+
+full.data$`해지예측여부`<-0
+for(i in 1:nrow(full.data)){
+  if(full.data$`미납횟수`[i] > full.data$`최대미납허용횟수`[i]){full.data$`해지예측여부`[i]<-1}
+}
+full.data$`해지예측여부`<-as.factor(full.data$`해지예측여부`)
+
+full.data$미납여부 <- 0
+for (i in 1:nrow(full.data)){
+  if(full.data$미납횟수[i]>0){
+    full.data$미납여부[i]<-1
+  }
+}
+full.data$미납여부<-as.factor(full.data$미납여부)
+```
+
+```{r}
+#상품중분류 소분류 묶기
+full.data$상품분류 <- as.factor(paste0(full.data$상품중분류, full.data$상품소분류))
+table(full.data$상품분류)
+
+#납입기간 종류 추가
+##단기납
+full.data$납입완료일자 <- as.Date(paste0(year(full.data$계약일자)+full.data$`납입기간/년`,substr(full.data$계약일자,5,10)))
+```
+
+```{r}
+#월보험료, 경과비율, 전기납여부 등 추가 (총 32개의 변수)
+full.data <- full.data %>% mutate(월보험료 = 보험료 / 납입간격,
+                                  경과비율 = round(총경과월수 / 총계약월수 * 100),
+                                  전기납여부 = as.factor(ifelse(`납입기간/년`== interval(계약일자, 실제만기일자) %/% years(1),1,0)),
+                                  계약만기분기 = as.factor(quarter(계약일자)))
+
+full.data$TARGET_YN <- as.factor(full.data$TARGET_YN)
+```
+
+# Part 1
+## a)
+```{r}
+g1 <- full.data %>% filter(!is.na(full.data$TARGET_YN)) %>% ggplot() + geom_boxplot(aes(y=가입연령, x = TARGET_YN))
+g2 <- full.data %>% filter(!is.na(full.data$TARGET_YN)) %>% ggplot() + geom_boxplot(aes(y=`납입기간/년`, x =TARGET_YN))
+g3 <- full.data %>% filter(!is.na(full.data$TARGET_YN)) %>% ggplot() + geom_boxplot(aes(y=월보험료, x =TARGET_YN))
+
+grid.arrange(g1, g2, g3, ncol=3)
+
+#가입연령 
+g1 <- full.data %>% filter(!is.na(full.data$TARGET_YN)) %>% ggplot() + geom_boxplot(aes(y=가입연령, x = TARGET_YN)) + coord_flip() + theme_minimal()
+g2 <- full.data %>% filter(!is.na(full.data$TARGET_YN)) %>% ggplot() + geom_boxplot(aes(y=log(가입연령), x = TARGET_YN)) + coord_flip() + theme_minimal()
+grid.arrange(g1, g2)
+
+#납입기간/년
+g1 <- full.data %>% filter(!is.na(full.data$TARGET_YN)) %>% ggplot() + geom_boxplot(aes(y=`납입기간/년`, x =TARGET_YN)) + coord_flip() + theme_minimal()
+g2 <- full.data %>% filter(!is.na(full.data$TARGET_YN)) %>% ggplot() + geom_boxplot(aes(y=log(`납입기간/년`), x =TARGET_YN)) + coord_flip() + theme_minimal()
+grid.arrange(g1, g2)
+
+#총계약월수
+g1 <- full.data %>% filter(!is.na(full.data$TARGET_YN)) %>% ggplot() + geom_boxplot(aes(y=`총계약월수`, x =TARGET_YN)) + coord_flip() + theme_minimal()
+g2 <- full.data %>% filter(!is.na(full.data$TARGET_YN)) %>% ggplot() + geom_boxplot(aes(y=log(`총계약월수`), x =TARGET_YN)) + coord_flip() + theme_minimal()
+grid.arrange(g1, g2)
+
+#최종납입개월수
+g1 <- full.data %>% filter(!is.na(full.data$TARGET_YN)) %>% ggplot() + geom_boxplot(aes(y=`최종납입개월수`, x =TARGET_YN)) + coord_flip() + theme_minimal()
+g2 <- full.data %>% filter(!is.na(full.data$TARGET_YN)) %>% ggplot() + geom_boxplot(aes(y=log(`최종납입개월수`), x =TARGET_YN)) + coord_flip() + theme_minimal()
+grid.arrange(g1, g2)
+
+#경과비율
+g1 <- full.data %>% filter(!is.na(full.data$TARGET_YN)) %>% ggplot() + geom_boxplot(aes(y=`경과비율`, x =TARGET_YN)) + coord_flip() + theme_minimal()
+g2 <- full.data %>% filter(!is.na(full.data$TARGET_YN)) %>% ggplot() + geom_boxplot(aes(y=log(`경과비율`), x =TARGET_YN)) + coord_flip() + theme_minimal()
+grid.arrange(g1, g2)
+
+#월보험료
+g1 <- ggplot(full.data) + geom_histogram(aes(월보험료), bins=30)
+g2 <- ggplot(full.data) + geom_histogram(aes(log(월보험료)), bins=30)
+grid.arrange(g1, g2)
+
+
+full.data.a <- full.data %>% mutate(월보험료 = log1p(월보험료),
+                                    최종납입개월수 = log1p(최종납입개월수),
+                                    경과비율 = log1p(경과비율))
+```
+
+```{r}
+str(full.data.a)
+```
+################################################
+# delta: 해지여부
+# x1: 가입연령층 (numeric)
+# x2: 납입방법 (factor)
+# x3: 납입기간/년 (numeric)
+# x4: 수금방법 (factor)
+# x5: 월보험료 (numeric) [log변환]
+# x6: 부활유무 (factor)
+# x7: 상품분류 (factor)
+# x8: 무만기 여부 (factor)
+# x9: 전기납여부 (factor)
+# x10: 경과비율 (numeric) [log변환]
+# x11: 총계약월수 (numeric)
+# x12: 해치예측여부 (factor)
+# x13: 미납여부 (factor)
+# x14: 계약만기분기 (factor)
+# x15: 최종납입기간 (numeric) [log변환]
+################################################
+
+```{r message=FALSE, warning=FALSE}
+# split
+train.a <- full.data.a %>% filter(`추정/검정` == 1) %>% dplyr::select(-c("납입간격","계약일자","지급만기일자","최종납입횟수","상품중분류","상품소분류","추정/검정","이상적횟수","납입완료일자","가입연령","현연령","현연령층","총경과월수","최대미납허용횟수","보험료","실제만기일자","미납횟수")) %>% dplyr::select(c("TARGET_YN","가입연령층","납입방법","납입기간/년","수금방법","월보험료","부활유무","상품분류","무만기 여부", "전기납여부","경과비율","총계약월수","해지예측여부","미납여부","계약만기분기","최종납입개월수")) #4,987 * 16
+
+colnames(train.a) <- c("delta",paste0("x",1:15))
+
+
+#train.a.all <- full.data.a %>% filter(`추정/검정` == 1)
+
+test.a <- full.data.a %>% filter(`추정/검정` == 2) %>% dplyr::select(-c(c("납입간격","계약일자","지급만기일자","최종납입횟수","상품중분류","상품소분류","추정/검정","이상적횟수","납입완료일자","가입연령","현연령","현연령층","총경과월수","최대미납허용횟수","보험료","실제만기일자","미납횟수"))) %>% dplyr::select(c("TARGET_YN","가입연령층","납입방법","납입기간/년","수금방법","월보험료","부활유무","상품분류","무만기 여부", "전기납여부","경과비율","총계약월수","해지예측여부","미납여부","계약만기분기","최종납입개월수")) #4,997 * 16
+
+colnames(test.a) <- c("delta",paste0("x",1:15))
+
+#test.a.all <- full.data.a %>% filter(`추정/검정` == 2)
+
+# glm
+glm_probit <- glm(delta ~ ., family = binomial(link = "probit"), data = train.a)
+glm_logit <- glm(delta ~ ., family = binomial(link = "logit"), data = train.a)
+cloglog = function(x) log(-log(1-x))
+glm_gompit <- glm(delta ~ ., family = binomial(link = cloglog), data = train.a)
+
+#interaction 포함
+glm_probit2 <- glm(delta ~ .*., family = binomial(link = "probit"), data = train.a)
+prob_both <- step(glm_probit, scope = formula(glm_probit2), trace=F)
+prob_simp_step <- step(glm_probit, alpha = 0.15, trace=F)
+
+glm_logit2 <- glm(delta ~ .*., family = binomial(link = "logit"), data = train.a)
+log_both <- step(glm_logit,  scope = formula(glm_logit2), trace=F)
+log_simp_step <- step(glm_logit, alpha = 0.15, trace=F)
+
+glm_gompit2<- glm(delta ~ .*., family = binomial(link = cloglog), data = train.a)
+gomp_both <- step(glm_gompit, scope = formula(glm_gompit2), trace=F)
+gomp_simp_step <- step(glm_gompit, alpha = 0.15, trace=F)
+
+
+prob_aic <- rbind(simple=extractAIC(glm_probit), simple_stepwise=extractAIC(prob_simp_step), interaction=extractAIC(glm_probit2), stepwise=extractAIC(prob_both))
+
+logit_aic <- rbind(simple=extractAIC(glm_logit),  simple_stepwise=extractAIC(log_simp_step),interaction=extractAIC(glm_logit2), stepwise=extractAIC(log_both))
+
+gomp_aic <- rbind(simple=extractAIC(glm_gompit),  simple_stepwise=extractAIC(gomp_simp_step),interaction=extractAIC(glm_gompit2), stepwise=extractAIC(gomp_both))
+
+prob_aic #1291.351, 1260.322, 14999.374, 1218.055 
+logit_aic #1288.012, 1253.818, 16657.382, 1217.864 [최적 모형: stepwise 돌린 logit 모형]
+#delta ~ 가입연령층 + 납입기간/년 + 월보험료 + 부활유무 + 해지예측여부 + 미납여부 + 최종납입기간 + 미납여부:최종납입기간 + 부활유무:최종납입기간 + 납입기간/년:미납여부 + 납입기간/년:부활유무 + 월보험료:미납여부
+gomp_aic #1285.486, 1249.771, 16369.033, 1220.806
+```
+
+## b
+```{r warning=FALSE, message=FALSE}
+# GAM
+
+gam_probit <- gam::gam(delta ~ x1+ x2 + x3 + x4 + x5 + x6 + x7 + x8 + x9 + x10 + x11 + x12 + x13 + x14 + x15, data=train.a, family=binomial(link="probit"))
+gam_logit <- gam::gam(delta ~ x1+ x2 + x3 + x4 + x5 + x6 + x7 + x8 + x9 + x10 + x11 + x12 + x13 + x14 + x15, data=train.a, family=binomial(link="logit"))
+cloglog = function(x) log(-log(1-x))
+gam_gompit <- gam::gam(delta ~ x1+ x2 + x3 + x4 + x5 + x6 + x7 + x8 + x9 + x10 + x11 + x12 + x13 + x14 + x15, data=train.a, family=binomial(link=cloglog))
+
+
+
+
+gam_scope = list("x1" = ~1 + x1 + s(x1, 4) + s(x1, 8),
+                 "x2" = ~1 + x2,
+                 "x3" = ~1 + x3 + s(x3, 4) + s(x3, 8),
+                 "x4" = ~1 + x4,
+                 "x5" = ~1 + x5 + s(x5, 4) + s(x5, 8),
+                 "x6" = ~1 + x6,
+                 "x7" = ~1 + x7,
+                 "x8" = ~1 + x8,
+                 "x9" = ~1 + x9,
+                 "x10" = ~1 + x10 + s(x10, 4) + s(x10, 8),
+                 "x11" = ~1 + x11 + s(x11, 4) + s(x11, 8),
+                 "x12" = ~1 + x12,
+                 "x13" = ~1 + x13,
+                 "x14" = ~1 + x14,
+                 "x15" = ~1 + x15 + s(x15, 4) + s(x15, 8))
+                 
+gam_step_probit <- gam::step.Gam(gam_probit, scope = gam_scope, trace=F)
+gam_step_logit <- gam::step.Gam(gam_logit, scope = gam_scope, trace=F)
+gam_step_gompit <- gam::step.Gam(gam_gompit, scope = gam_scope, trace=F)
+
+
+rbind(c('GAM probit AIC: ', gam_step_probit$aic), c('GAM logit AIC: ', gam_step_logit$aic), c('GAM gompit AIC: ', gam_step_gompit$aic)) #probit: 1259.387, logit: 1253.817, gompit: 1249.77
+
+# plot
+par(family = "AppleGothic") 
+plot(gam_step_gompit)
+```
+# Part 2
+## a)
+```{r message=FALSE, warning=FALSE}
+sur.cox <- coxph(Surv(x15, (as.numeric(delta)-1)) ~ x1 + x2 + x3 + x4 + log(x5) + x6 + x7 + x8 + x9 + log1p(x10) + x11 + x12 + x13 + x14 + log(x5):log1p(x10) + log(x5):x11 + log1p(x10):x11, data = train.a.full)
+
+sur.cox
+
+ggsurvplot(survfit(sur.cox), data=train.a.full, conf.int = FALSE)
+```
+```{r message=FALSE, warning=FALSE}
+cox.model <- stepAIC(sur.cox, direction = "both", trace = 0)
+AIC(cox.model)
+```
+```{r}
+cox.model
+ggsurvplot(survfit(cox.model), data=train.a.full, conf.int=FALSE)
+```
+
+## b)
+```{r message=FALSE, warning=FALSE}
+cox.model2 <- coxph(Surv(x15, (as.numeric(delta)-1)) ~ x1 + x6 + x7 + x8 + x10 + x11 + x12 + x13, data = train.a.full)
+S <- basehaz(cox.model2)
+
+lm <- lm(log(hazard)~log(time), data = S)
+alpha <- summary(lm)$coefficients[1] #-14.7467
+beta <- summary(lm)$coefficients[2] #3.301132
+```
+
+```{r}
+Ht <- exp(alpha+beta*log(train.a.full$x15))
+Ht.delta <- exp(alpha+beta*log(train.a.full$x15+3))
+St <- exp(-Ht)
+St.delta <- exp(-Ht.delta)
+
+mu.cox <- exp(predict(cox.model2, train.a.full, type = 'lp'))
+p.cox <- 1-(St.delta/St)^mu.cox
+hist(p.cox)
+```
+```{r}
+sum(is.na(p.cox))
+ggsurvplot(survfit(cox.model2), data=train, conf.int = FALSE)
+```
+```{r}
+hx <- predict(cox.model2, train.a.full, type = 'expected') 
+
+plot(log(hx) + log(3), log(p.cox), main = "[Survival]lnp* vs ln(hx)+ln(delta)",
+     xlab="ln(hx)+ln(delta)",ylab ="log(p)") + abline(0,1,col=2)
+
+score <- exp(predict(cox.model2, train.a.full, type = 'lp'))
+```
+
+
+# Part 3
+## a)
+```{r}
+# 1) GLM 해지 확률
+glm_pred <- log_both$fitted.values
+glm_df <- data.frame(glm_y=train.a$delta, pred=glm_pred)
+glm_top500 <- glm_df[order(-glm_df$pred)[1:500],]
+
+# 2) GAM 해지 확률
+gam_pred <- gam_step_gompit$fitted.values
+gam_df <- data.frame(gam_y=train.a$delta, pred=gam_pred)
+gam_top500 <- gam_df[order(-gam_df$pred)[1:500],]
+
+# 3) Cox
+# cox.result <-data.frame(score = score, y = train.a.full$delta) %>% arrange(desc(score))
+# cox_top <- cox.result[1:500,]
+# cox_top$ind <- row.names(cox_top)
+# cox_top %>% arrange(desc(score)) %>% dplyr::select(ind) -> cox_ind
+
+# index(지수변수 구하기)
+head(row.names(glm_top500))
+head(row.names(gam_top500))
+# head(cox_ind[1:500,])
+
+# train_indicator <- data.frame(cbind(row.names(glm_top500), row.names(gam_top500), cox_ind[1:500,]))
+# colnames(train_indicator) <- c('GLM', 'GAM', 'COX')
+
+train_indicator <- data.frame(cbind(row.names(glm_top500), row.names(gam_top500)))
+colnames(train_indicator) <- c('GLM', 'GAM')
+head(train_indicator)
+
+glm_top500.delta <- rep(0,nrow(test.a))
+glm_top500.delta[c(as.numeric(row.names(glm_top500)))] <- 1
+
+gam_top500.delta <- rep(0, nrow(test.a))
+gam_top500.delta[c(as.numeric(row.names(gam_top500)))] <- 1
+
+train_indicator2 <- cbind(glm_top500.delta, gam_top500.delta) %>% `colnames<-`(c("GLM","GAM")) %>% `rownames<-`(1:nrow(test.a))
+
+#write_csv(data.frame(row.names(glm_top500)), 'train_glm지시변수.csv')
+#write_csv(data.frame(row.names(gam_top500)), 'train_gam지시변수.csv')
+#write.csv(cox_ind[1:500,],"train_cox지시변수.csv", row.names =F)
+write.csv(train_indicator2, 'GLM_GAM_indicator.csv', row.names=F)
+```
+
+## b)
+```{r}
+# GLM
+glm_df <- glm_df %>% arrange(desc(pred))
+rownames(glm_df) <- 1:nrow(glm_df)
+mat <- matrix(0, ncol=3, nrow=10)
+mat[,1] <- sum(glm_df$glm_y==1)/nrow(glm_df)
+
+for (i in 1:10){
+  df <- glm_df[((i-1)*500+1):(i*500),]
+  df <- na.omit(df)
+  mat[i,2] <- sum(df$glm_y==1)/nrow(df)
+  mat[i,3] <- mat[i,2]/mat[i,1]
+}
+
+colnames(mat) <- c('tot_lift', 'row_lift', 'lift')
+mat
+
+# GAM
+gam_df <- gam_df %>% arrange(desc(pred))
+rownames(gam_df) <- 1:nrow(gam_df)
+mat2 <- matrix(0, ncol=3, nrow=10)
+mat2[,1] <- sum(gam_df$gam_y==1)/nrow(gam_df)
+
+for (i in 1:10){
+  df <- gam_df[((i-1)*500+1):(i*500),]
+  df <- na.omit(df)
+  mat2[i,2] <- sum(df$gam_y==1)/nrow(df)
+  mat2[i,3] <- mat2[i,2]/mat2[i,1]
+}
+colnames(mat2) <- c('tot_lift', 'row_lift', 'lift')
+mat2
+```
+
+## c)
+```{r}
+### 1) GLM
+glm_predict <- prediction(glm_df$pred, glm_df$glm_y)
+glm_fit <- performance(glm_predict, 'lift', 'rpp')
+plot(glm_fit, col='red', main="lift curve of GLM model")
+
+### 2) GAM
+gam_predict <- prediction(gam_df$pred, gam_df$gam_y)
+gam_fit <- performance(gam_predict, 'lift', 'rpp')
+plot(gam_fit, col='blue', main="lift curve of GAM model")
+
+### 3) Cox
+cox.lift<-prediction(p.cox,cox.result$y)
+cox.lift <- performance(cox.lift, measure="lift", "rpp")
+plot(cox.lift , main="lift curve : Cox.PHM",col = 2)
+
+plot(glm_fit, col="red", main="lift curve")
+plot(gam_fit, col="blue", add=TRUE)
+plot(cox.lift, col = "green", add=TRUE)
+legend(x=0.82, y=24, legend = c("GLM", "GAM", "COX"), col = c("red", "blue", "green"), lty=c(1,1))
+```
+## d
+```{r}
+c('GLM AIC: ', round(AIC(log_both)), 'GAM AIC: ', round(gam_step_gompit$aic), 'COX AIC: ', round(AIC(cox.model)))
+```
+
+## e
+```{r eval=FALSE, include=FALSE}
+### 1) GLM 해지 확률
+glm_yhat <- predict(log_both, newdata = test.a, type = 'response')
+glm_df <- data.frame(index=seq(1:4997), perc=glm_yhat)
+glm_pred_top500 <- glm_df[order(-glm_df$perc),]$index[1:500]
+
+### 2) GAM 해지 확률
+gam_yhat <- predict(gam_step_gompit, newdata = test.a, type = 'response')
+gam_df <- data.frame(index=seq(1:4997), perc=gam_yhat)
+gam_pred_top500 <- gam_df[order(-gam_df$perc),]$index[1:500]
+
+### 3) COX 해지 확률
+# test.a$delta <- as.numeric(test.a$delta)
+# test.c <-cbind(data.frame(scale(test.a[,-c(1,3,5,7,8,9,10,13,14,15)],scale=F)),test.a[,c(1,3,5,7,8,9,10,13,14,15)])
+# test.score<-exp(predict(cox.model2,test.c, type = 'lp'))
+# cox_top <-data.frame(p.cox = sort(test.score,decreasing = T)[1:500]) 
+# cox_top$ind <- row.names(cox_top)
+
+head(glm_pred_top500)
+head(gam_pred_top500)
+#head(cox_top[2])
+
+glm_top500.delta <- rep(0,nrow(test.a))
+glm_top500.delta[c(glm_pred_top500)] <- 1
+
+gam_top500.delta <- rep(0, nrow(test.a))
+gam_top500.delta[c(gam_pred_top500)] <- 1
+
+test_indicator2 <- cbind(glm_top500.delta, gam_top500.delta) %>% `colnames<-`(c("GLM","GAM")) %>% `rownames<-`(1:nrow(test.a))
+
+# test_indicator <- data.frame(cbind(glm=glm_pred_top500, gam=gam_pred_top500))
+#write.csv(glm_pred_top500, 'glm지수변수.csv', row.names=FALSE)
+#write.csv(gam_pred_top500, 'gam지수변수.csv', row.names=FALSE)
+#write.csv(cox_top[2],"test_indicator.csv", row.names =F)
+write.excel(test_indicator2, 'GLM_GAM_test_indicator.csv', row.names=F)
+```
+
+
+## f.
+```{r eval=FALSE, error=TRUE, message=FALSE, warning=FALSE, include=FALSE}
+
+min_max <- function(x){ return((x-min(x))/(max(x)-min(x)))}
+train.s[,-c(1,3,5,7,8,9,10,13,14,15)] <- as.data.frame(lapply(train.s[,-c(1,3,5,7,8,9,10,13,14,15)], min_max))
+```
+
+### LDA
+```{r}
+ld <- lda(delta~., data=train.a)
+ld_hat <- predict(ld, train.a)
+pred_lda <- ld_hat$posterior[,2]
+# ldahist(ld_hat$x, g=train.a$delta)
+# CrossTable(train2$해지, ld_hat$class, prop.chisq=FALSE)
+
+lda_pred <- prediction(ld_hat$posterior[,2], train.a$delta)
+lda_perf <- performance(lda_pred, "lift", "rpp")
+plot(lda_perf, main="lift curve of LDA", colorize=TRUE)
+
+order_lda <- pred_lda[order(-pred_lda)]
+order_target <- train.a$delta[order(-pred_lda)]
+
+liftchart_lda <- data.frame(cbind(order_target, order_lda))
+liftchart_lda$order_target <- as.numeric(liftchart_lda$order_target)-1
+
+lift_lda <- NULL
+for (i in 1:10){
+  lift_lda[i] <- (sum(liftchart_lda[(500*(i-1)+1),]$order_target)/500)/(199/5000)
+}
+lift_lda
+```
+
+### KNN
+```{r}
+set.seed(123)
+
+train2 <- train.s
+train2$delta <- ifelse(train2$delta==1, "yes", "no")
+control <- trainControl(method="repeatedcv",
+                        number=10,
+                        repeats = 30,
+                        classProbs = TRUE)
+kn <- train(delta~., data=train2, method="knn", trControl=control)
+best_k <- kn$bestTune #7
+kn_fit <- knn(train=train2[,-1], cl=train2$delta, test=train2[,-1], k=best_k, prob=TRUE)
+
+knn_pred <- prediction(1-attr(kn_fit,"prob"), train.a$delta)
+knn_perf <- performance(knn_pred, "lift", "rpp", main="lift curve", colorize=TRUE)
+plot(knn_perf, main="lift curve of KNN", colorize=TRUE)
+```
+
+### SVM
+```{r eval=FALSE, include=FALSE}
+svm.t <- tune.svm(delta~., data=train.a, gamma=c(0.05,0.01), cost=c(7,8))
+svm_fit <- svm(delta~., data=train.a, gamma=0.05, cost=7, probability=TRUE) 
+summary(svm_fit)
+svm_hat <- predict(svm_fit, train.a, probability = TRUE)
+
+svm_pred <- prediction(attr(svm_hat,"prob")[,2], train.a$delta)
+svm_perf <- performance(svm_pred, "lift", "rpp", main="lift curve", colorize=TRUE)
+plot(svm_perf, main="lift curve of SVM", colorize=TRUE)
+```
+
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+#scaling 
+train.scale <- cbind(scale(train.a[-c(1,3,5,7,8,9,10,13,14,15)]), train.a[c(1,3,5,7,8,9,10,13,14,15)])
+
+#one-hot-encoding
+train.one <- train.a %>% mutate(delta=as.numeric(delta)-1)
+train.one<-one_hot(as.data.table(train.one))
+xgb.train <- xgb.DMatrix(data=as.matrix(train.one[,-1]),label=train.one$delta)
+```
+
+### Random Forest 
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+rf_model <- randomForest(delta ~ ., data=train.a, mtry = floor(sqrt(15)), ntree = 500, importance = T)
+rf_model
+#mtry :각각의 tree마다 몇 개의 feature를 사용/ 보통 classification의 경우 sqrt(변수갯수)
+#importance(rf_model)
+
+varImpPlot(rf_model,main = "rf : feature_importance")
+rf_pred <- predict(rf_model, train.a, type = "prob")[,2]
+table(rf_pred>0.5, train.a$delta)
+```
+
+### Neural Network
+scaling data를 이용해야만 label = 1인 예측을 함. 
+
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+#train.scale["납입방법"] <- as.numeric(as.character(train.scale$납입방법))
+#train.scale["납입방법"] <- as.factor(train.scale$납입방법)
+set.seed(123)
+#상품소분류 제외하고 fitting 
+nn_model <- nnet(delta ~. , data=train.scale[,c(-9,-13)], size = 4, decay = 5e-04)
+
+#summary(nn_model)
+garson(nn_model)+theme(axis.text.x=element_text(angle=45, hjust=1))
+
+### predict 
+nn_pred<-predict(nn_model,newdata=train.scale)
+table(nn_pred>0.5,train.scale$delta)
+```
+
+### XGBoost 
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+# Train the XGBoost classifer
+xgb_model =xgb.train(
+  data=xgb.train,
+  max.depth = 5, eta = 0.01, nthread = 2, nrounds = 2, objective = "binary:logistic",
+  subsample = 0.8, min_child_weight = 1, verbose=0
+)
+
+# Predict 
+xgb_pred = predict(xgb_model,newdata = xgb.train,reshape=T) 
+table(xgb_pred>0.5,train.a$delta)
+
+xgb.importance(model = xgb_model) -> xgb_imp
+xgb.plot.importance(importance_matrix = xgb_imp,main="XGB : feature imp") 
+```
+
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+train_pred <- data.frame(true.y = factor(train.a$delta), rf = rf_pred , xgb = c(xgb_pred) ,nn = nn_pred)
+
+lift_curve <- lift(true.y ~ rf+ xgb + nn , data = train_pred)
+ggplot(lift_curve$data) + geom_line(aes(cuts, lift , color = liftModelVar),size = 1.2, alpha = 0.6)
+
+rf.lift <- performance(prediction(train_pred$rf, train_pred$true.y), 'lift', 'rpp')
+xgb.lift <- performance(prediction(train_pred$xgb, train_pred$true.y), 'lift', 'rpp')
+nn.lift <- performance(prediction(train_pred$nn, train_pred$true.y), 'lift', 'rpp')
+```
+### Lift plot
+```{r eval=FALSE, include=FALSE}
+plot(knn_perf, main="lift curve", col=1, ylim=c(0, 25))
+plot(svm_perf, col=2, add=TRUE)
+plot(lda_perf, col=3, add=TRUE)
+plot(rf.lift, col=3, add=TRUE, lwd=3)
+plot(xgb.lift, col=4, add=TRUE)
+plot(nn.lift, col=5, add=TRUE)
+legend("topright", legend = c("KNN", "SVM", "RandomForest", "XGB" ,"NN"), col = c(1:5), lty=rep(1,5), inset=0.05)
+```
+
+
+## f.new
+### SVM
+```{r}
+#scaling 
+train.scale <- cbind(scale(train.a[-c(1,3,5,7,8,9,10,13,14,15)]), train.a[c(1,3,5,7,8,9,10,13,14,15)])
+trainy <- train.a[,1]
+
+#one-hot-encoding
+train.one <- train.a %>% mutate(delta=as.numeric(delta)-1)
+train.one<-one_hot(as.data.table(train.one))
+train3 <- data.frame(trainy, train.one[,-1])
+
+
+testx <- test.a[,-1] # feature variables 
+ttest <- one_hot(as.data.table(testx)) # dummy variable 
+testy <- test.a[,1] # class variable (target)
+
+svm2 <- svm(delta~., data = train3,type = "C-classification", 
+            scale = TRUE,probability = TRUE, cost = 10, gamma = 0.1)
+
+pred_svm <- sort(attr(predict(svm2, ttrain, probability=TRUE), "probabilities")[,2], decreasing = TRUE)
+
+svm_label <- data.frame(value = ifelse(pred_svm > 0.5, 1, 0))
+table(svm_label)
+
+order_svm <- pred_svm[order(-pred_svm)]
+order_target <- train.a$delta[order(-pred_svm)]
+
+liftchart_svm<- data.frame(cbind(order_target, order_svm))
+liftchart_svm$order_target <- as.numeric(liftchart_svm$order_target)-1
+
+lift_svm <- NULL
+for (i in 1:10){
+  lift_svm[i] <- (sum(liftchart_svm[(500*(i-1)+1):(500*i),]$order_target)/500)/(199/5000)
+}
+lift_svm
+
+for (i in 1:10){
+  df <- glm_df[((i-1)*500+1):(i*500),]
+  df <- na.omit(df)
+  mat[i,2] <- sum(df$glm_y==1)/nrow(df)
+  mat[i,3] <- mat[i,2]/mat[i,1]
+}
+```
+
+
+
+
