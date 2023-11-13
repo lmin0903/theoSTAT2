@@ -1,0 +1,113 @@
+---
+title: "[Part 2] Cox"
+output:
+  html_document:
+    fig_height: 5
+    fig_width: 8
+    highlight: textmate
+    theme: cosmo
+    df_print: paged
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r include=FALSE}
+library(optimx)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(readxl)
+library(leaps)
+library(MASS)
+library(kableExtra)
+library(reshape2)
+library(lubridate)
+library(readr)
+library(scales)
+library(patchwork)
+library(forecast)
+library(ggfortify)
+library(ggpubr)
+options(scipen=99)
+```
+
+
+
+## 데이터 전처리
+
+```{r}
+setwd("/Users/min/Desktop/2023-2/이론통계학II/HW7")
+### train
+train2 <- read_csv("train2.csv", col_types = cols(...1 = col_skip()))
+
+train2$delta<-as.factor(train2$delta)
+train2$x4<-as.factor(train2$x4)
+train2$x5<-as.factor(train2$x5)
+train2$x6<-as.factor(train2$x6)
+train2$x7<-as.factor(train2$x7)
+train2$x8<-as.factor(train2$x8)
+train2$x9<-as.factor(train2$x9)
+train2$x10<-as.factor(train2$x10)
+
+### test
+test <- read_csv("test1.csv", col_types = cols(...1 = col_skip()))
+
+test$delta<-as.factor(test$delta)
+test$x4<-as.factor(test$x4)
+test$x5<-as.factor(test$x5)
+test$x6<-as.factor(test$x6)
+test$x7<-as.factor(test$x7)
+test$x8<-as.factor(test$x8)
+test$x9<-as.factor(test$x9)
+test$x10<-as.factor(test$x10)
+
+summary(train)
+summary(test)
+```
+
+
+### 최적 cox PHM 모형
+
+```{r include=FALSE}
+library(readxl); library(tidyverse); library(GGally); library(ggplot2); library(gridExtra); library(lubridate); library(bestglm); library(ROCR); library(gam); library(MASS); library(caret); library(e1071); library(kknn); library(class);library(survival); library(survminer); library(mltools); library(data.table); library(reshape);
+library(kableExtra); library(devtools); library(nnet); library(NeuralNetTools); library(xgboost); library(randomForest)
+```
+
+
+
+```{r}
+library(survival)
+sur.cox1 <- coxph(Surv(x15*as.numeric(x16), (as.numeric(delta)-1)) ~ as.numeric(x1)+x2+x3+x4+log(x5)+x6+x7+x8+x9+x10+x11+x12+x13+x14, data = train1)
+ggsurvplot(survfit(sur.cox1), data=train1, conf.int = FALSE)
+#summary(sur.cox)
+cox.model1<-stepAIC(sur.cox1,direction = "both", trace = 0)
+#summary(cox.model)
+AIC(cox.model1) #1829.144
+
+
+sur.cox2 <- coxph(Surv(x15*as.numeric(x16), (as.numeric(delta)-1)) ~ as.numeric(x1)+x2+x3+x4+log(x5)+x6+x7+x8+x9+x10+x11+I(x12/x13)+x14+log(x5):x14+x6:x14, data = train1)
+#ggsurvplot(survfit(sur.cox2), data=train1, conf.int = FALSE)
+#summary(sur.cox)
+cox.model2<-stepAIC(sur.cox2,direction = "both", trace = 0)
+#summary(cox.model)
+AIC(cox.model2) #1829.144
+ggsurvplot(survfit(cox.model2), data=train1, conf.int = FALSE)
+```
+
+
+
+
+
+```{r}
+sur.cox3 <- coxph(Surv(x15*x16, (as.numeric(delta)-1)) ~ as.numeric(x1) + x2 + x3 + x4 + log(x5) + x6 + x7 + x9 + x10 + x11 + I(x12/x13) + x14, data = train1)
+cox.model3<-stepAIC(sur.cox3,direction = "both", trace = 0)
+#summary(cox.model)
+AIC(cox.model3) #1829.144
+ggsurvplot(survfit(cox.model3), data=train1, conf.int = FALSE)
+```
+
+
+
+
+
