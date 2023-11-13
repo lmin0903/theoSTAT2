@@ -1,0 +1,328 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+
+```{r include=FALSE}
+library(readxl); library(tidyverse); library(GGally); library(ggplot2); library(gridExtra); library(lubridate); library(bestglm); library(ROCR); library(gam); library(MASS); library(caret); library(e1071); library(kknn); library(class);library(survival); library(survminer); library(mltools); library(data.table); library(reshape);
+library(kableExtra); library(devtools); library(nnet); library(NeuralNetTools); library(xgboost); library(randomForest)
+
+options(scipen=999)
+```
+
+```{r}
+train <- read.csv("train1106.csv")
+test <- read.csv("test1106.csv")
+```
+
+```{r}
+train$delta <- as.factor(train$delta)
+train$x2 <- as.factor(train$x2)
+train$x4 <- as.factor(train$x4)
+train$x6 <- as.factor(train$x6)
+train$x7 <- as.factor(train$x7)
+train$x8 <- as.factor(train$x8)
+train$x9 <- as.factor(train$x9)
+train$x12 <- as.factor(train$x12)
+train$x13 <- as.factor(train$x13)
+train$x14 <- as.factor(train$x14)
+
+test$delta <- as.factor(test$delta)
+test$x2 <- as.factor(test$x2)
+test$x4 <- as.factor(test$x4)
+test$x6 <- as.factor(test$x6)
+test$x7 <- as.factor(test$x7)
+test$x8 <- as.factor(test$x8)
+test$x9 <- as.factor(test$x9)
+test$x12 <- as.factor(test$x12)
+test$x13 <- as.factor(test$x13)
+test$x14 <- as.factor(test$x14)
+```
+
+
+### (f)
+
+```{r}
+# min-max
+train.s <- train
+min_max <- function(x){ return((x-min(x))/(max(x)-min(x)))}
+train.s[,-c(1,3,5,7,8,9,10,13,14,15)] <- as.data.frame(lapply(train.s[,-c(1,3,5,7,8,9,10,13,14,15)], min_max))
+```
+
+```{r}
+# scaling 
+train.scale <- cbind(scale(train[-c(1,3,5,7,8,9,10,13,14,15)]), train[c(1,3,5,7,8,9,10,13,14,15)])
+```
+
+```{r}
+# one-hot-encoding
+train.one <- train %>% mutate(delta=as.numeric(delta)-1)
+train.one <- one_hot(as.data.table(train.one))
+xgb.train <- xgb.DMatrix(data=as.matrix(train.one[,-1]),label=train.one$delta)
+```
+
+
+
+#### LDA
+
+```{r}
+ld <- lda(delta ~ ., data=train)
+ld_hat <- predict(ld, train)
+ldahist(ld_hat$x, g=train$delta)
+```
+
+```{r}
+lda_pred <- prediction(ld_hat$posterior[,2], train$delta)
+lda_perf <- performance(lda_pred, "lift", "rpp")
+plot(lda_perf, main="lift curve of LDA", colorize=TRUE)
+```
+
+
+#### KNN
+
+```{r}
+set.seed(123)
+
+train2 <- train.s
+train2$delta <- ifelse(train2$delta==1, "yes", "no")
+control <- trainControl(method="repeatedcv", number=10, repeats = 30, classProbs = TRUE)
+
+kn <- train(delta ~ ., data=train2, method="knn", trControl=control)
+best_k <- kn$bestTune
+kn_fit <- knn(train=train2[,-1], cl=train2$delta, test=train2[,-1], k=best_k, prob=TRUE)
+```
+
+```{r}
+knn_pred <- prediction(1-attr(kn_fit,"prob"), train$delta)
+knn_perf <- performance(knn_pred, "lift", "rpp", main="lift curve", colorize=TRUE)
+plot(knn_perf, main="lift curve of KNN", colorize=TRUE)
+```
+
+
+
+#### SVM
+
+```{r}
+svm.t <- tune.svm(delta ~ ., data=train, gamma=c(0.05,0.01), cost=c(7,8))
+svm_fit <- svm(delta ~ ., data=train, gamma=0.05, cost=7, probability=TRUE) 
+summary(svm_fit)
+svm_hat <- predict(svm_fit, train, probability = TRUE)
+```
+
+```{r}
+svm_pred <- prediction(attr(svm_hat,"prob")[,2], train$delta)
+svm_perf <- performance(svm_pred, "lift", "rpp", main="lift curve", colorize=TRUE)
+plot(svm_perf, main="lift curve of SVM", colorize=TRUE)
+```
+
+
+
+#### Random Forest 
+
+```{r warning = FALSE, message = FALSE}
+rf_model <- randomForest(delta ~ ., data=train, mtry = floor(sqrt(13)), ntree = 500, importance = T)
+rf_model
+```
+
+```{r}
+varImpPlot(rf_model,main = "rf : feature_importance")
+rf_pred <- predict(rf_model, train, type = "prob")[,2]
+table(rf_pred>0.5, train$delta)
+```
+
+
+
+#### Neural Network
+
+```{r warning = FALSE, message = FALSE}
+set.seed(1004)
+nn_model <- nnet(delta ~. , data=train.scale[,c(-8)], size = 4, decay = 5e-04)
+
+#summary(nn_model)
+garson(nn_model) + theme(axis.text.x=element_text(angle=45, hjust=1))
+
+### predict 
+nn_pred <- predict(nn_model, newdata=train.scale)
+table(nn_pred>0.5, train.scale$delta)
+```
+
+
+
+
+#### XGBoost 
+
+```{r warning = FALSE, message = FALSE}
+# Train the XGBoost classifer
+xgb_model = xgb.train(
+  data=xgb.train,
+  max.depth = 5, eta = 0.01, nthread = 2, nrounds = 2, objective = "binary:logistic",
+  subsample = 0.8, min_child_weight = 1, verbose=0
+)
+
+# Predict 
+xgb_pred = predict(xgb_model, newdata = xgb.train, reshape=T) 
+table(xgb_pred>0.5, train$delta)
+```
+
+```{r}
+xgb_imp <- xgb.importance(model = xgb_model) 
+xgb.plot.importance(importance_matrix = xgb_imp,main="XGB : feature imp") 
+```
+
+```{r}
+train_pred <- data.frame(true.y = factor(train$delta), rf = rf_pred, xgb = c(xgb_pred), nn = nn_pred)
+
+rf.lift <- performance(prediction(train_pred$rf, train_pred$true.y), 'lift', 'rpp')
+xgb.lift <- performance(prediction(train_pred$xgb, train_pred$true.y), 'lift', 'rpp')
+nn.lift <- performance(prediction(train_pred$nn, train_pred$true.y), 'lift', 'rpp')
+```
+
+
+
+
+
+#### Lift plot
+
+```{r}
+plot(rf.lift, main="lift curve of Random Forest", colorize=TRUE)
+```
+
+```{r}
+plot(xgb.lift, main="lift curve of XGBoost", colorize=TRUE)
+```
+
+```{r}
+plot(nn.lift, main="lift curve of Neural Network", colorize=TRUE)
+```
+
+
+```{r}
+plot(knn_perf, main="lift curve", col=1, ylim=c(0, 25))
+plot(svm_perf, col=2, add=TRUE)
+
+plot(lda_perf, col=3, add=TRUE)
+plot(rf.lift, col=3, add=TRUE, lwd=3) 
+plot(xgb.lift, col=4, add=TRUE)
+plot(nn.lift, col=5, add=TRUE)
+legend("topright", legend = c("KNN", "SVM", "RandomForest", "XGB" ,"NN"), col=c(1:5), lty=rep(1,5), inset=0.05)
+```
+
+
+
+
+
+
+### (g)
+
+```{r}
+test <- test %>% dplyr::select(-delta)
+```
+
+```{r}
+# LDA
+test_lda <- predict(ld, test)$posterior[,2]
+test_lda <- data.frame(n = 1:length(test_lda), prob=test_lda) %>% arrange(desc(prob))
+head(test_lda)
+```
+
+```{r}
+# KNN
+set.seed(123)
+test.s <- test
+test.s[,-c(2,4,6,7,8,9,12,13,14)] <- as.data.frame(lapply(test.s[,-c(2,4,6,7,8,9,12,13,14)], min_max))
+test_knn <- knn(train=train2[,-1], cl=train2$delta, test=test.s, k=best_k, prob=TRUE)
+test_knn <- 1-attr(test_knn,"prob")
+test_knn <- data.frame(n = 1:length(test_knn), prob=test_knn) %>% arrange(desc(prob))
+head(test_knn)
+```
+
+```{r}
+# SVM
+test_svm <- predict(svm_fit, test, probability = TRUE)
+test_svm <- attr(test_svm, "prob")[,2]
+test_svm <- data.frame(n = 1:length(test_svm), prob=test_svm) %>% arrange(desc(prob))
+head(test_svm)
+```
+
+```{r}
+# scaling 
+test.scale <- cbind(scale(test[-c(2,4,6,7,8,9,12,13,14)]), test[c(2,4,6,7,8,9,12,13,14)])
+test.scale$x2 <- as.numeric(as.character(test.scale$x2))
+```
+
+```{r}
+# one-hot-encoding
+test.one <- one_hot(as.data.table(test))
+xgb.test <- as.matrix(test.one)
+```
+
+```{r}
+### test 
+rf_pred <- predict(rf_model,newdata=test,type="prob")[,2]
+nn_pred <- predict(nn_model,newdata=test.scale)
+xgb_pred <- predict(xgb_model,newdata = xgb.test,reshape=T)
+```
+
+```{r}
+### top 10% 
+final_predict <- data.frame(rf = rf_pred, nn = nn_pred, xgb = xgb_pred)
+final_predict$ind <- row.names(final_predict)
+```
+
+```{r}
+rf_ind <- final_predict %>% arrange(desc(rf_pred)) %>% dplyr::select(ind) 
+nn_ind <- final_predict %>% arrange(desc(nn_pred)) %>% dplyr::select(ind) 
+xgb_ind <- final_predict %>% arrange(desc(xgb_pred)) %>% dplyr::select(ind)
+```
+
+```{r}
+final_ind <- data.frame(rf_ind,nn_ind,xgb_ind)
+colnames(final_ind)<-c("RandomForest","NN","XGB")
+
+test_indicator <- data.frame(cbind(LDA=test_lda[,1], KNN=test_knn[,1], SVM=test_svm[,1], final_ind))
+head(test_indicator)
+```
+
+
+```{r}
+test_indicator$RandomForest <- as.numeric(test_indicator$RandomForest)
+test_indicator$NN <- as.numeric(test_indicator$NN)
+test_indicator$XGB <- as.numeric(test_indicator$XGB)
+str(test_indicator)
+
+
+aa <- cbind(test_indicator, "ind"=c(rep(1,500),rep(0,nrow(test_indicator)-500)))
+a1 <- aa %>% dplyr::select(LDA,ind) %>% arrange(LDA)
+a2 <- aa %>% dplyr::select(KNN,ind) %>% arrange(KNN)
+a3 <- aa %>% dplyr::select(SVM,ind) %>% arrange(SVM)
+a4 <- aa %>% dplyr::select(RandomForest,ind) %>% arrange(RandomForest)
+a5 <- aa %>% dplyr::select(NN,ind) %>% arrange(NN)
+a6 <- aa %>% dplyr::select(XGB,ind) %>% arrange(XGB)
+
+ls <- cbind("LDA"=a1$ind, "KNN"=a2$ind, "SVM"=a3$ind, "RF"=a4$ind, "NN"=a5$ind, "XGB"=a6$ind)
+```
+
+
+```{r}
+#write.csv(ls[1:500,], 'part3_G.csv', row.names = FALSE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
