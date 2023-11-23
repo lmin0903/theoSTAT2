@@ -1,0 +1,639 @@
+---
+title: '이론통계학2 Project #9'
+author: "232STG13 서민지"
+output:
+  html_document:
+    df_print: paged
+  prettydoc::html_pretty:
+    theme: architect
+    highlight: github
+---
+<style type="text/css">
+@font-face {
+    font-family: 'NanumSquareNeo-Variable';
+    src: url('https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_11-01@1.0/NanumSquareNeo-Variable.woff2') format('woff2');
+    font-weight: normal;
+    font-style: normal;
+}
+body{
+font-family: 'NanumSquareNeo-Variable';
+}
+</style>
+
+```{r include=FALSE}
+library(readxl)
+library(tidyverse)
+library(gridExtra)
+library(GGally)
+library(survival)
+library(survminer)
+library(gtsummary)
+library(MASS)
+library(fastDummies)
+library(ggfortify)
+library(gghalfnorm)
+library(Hmisc)
+library(gtsummary)
+options(scipen=500)
+
+setwd("C:/Users/서민지/Desktop/통계 대학원/2023-2/이론통계학2/Project 9")
+
+myimputation<-function(x,k=10){
+
+# this function imputes x-matrix using k-nn imputataion
+
+# x : x-matrix, k: nearest k neighborhood 
+
+# central. value functions fills the missing data
+
+# if numeric -> median
+
+# if categorical -> most frequen value
+
+
+   central.value <- function(x) {
+
+      if (is.numeric(x)) median(x,na.rm=T)
+
+      else if (is.factor(x)) levels(x)[which.max(table(x))] #mode value
+
+      else { #Compute mode value after change character varible to factor
+
+         f <- as.factor(x)
+
+         levels(f)[which.max(table(f))]
+
+      }
+
+   }
+
+   library(cluster)
+
+#dist.mtx has all pairwise distances in x-matrix
+
+#it uses daisy function in cluster package
+
+   dist.mtx<-as.matrix(daisy(x,stand=T))
+
+   for(r in which(!complete.cases(x))) x[r,which(is.na(x[r,]))] <- apply(data.frame(x[c(as.integer(names(sort(dist.mtx[r,])[2:(k+1)]))), which(is.na(x[r,]))]), 2,central.value)
+
+
+   return(x)
+
+}
+
+detect_outliers <- function(df, n, features) {
+  outlier_indices <- c()
+  
+  for (col in features) {
+    Q1 <- quantile(df[[col]], 0.25)
+    Q3 <- quantile(df[[col]], 0.75)
+    IQR <- IQR(df[[col]])
+    
+    outlier_step <- 1.5 * IQR
+    
+    outlier_list_col <- which(df[[col]] < Q1 - outlier_step | df[[col]] > Q3 + outlier_step)
+ 
+    outlier_indices <- c(outlier_indices, outlier_list_col)
+  }
+  
+  outlier_counts <- table(outlier_indices)
+  multiple_outliers <- as.numeric(names(outlier_counts[outlier_counts > n]))
+  
+  return(multiple_outliers)
+}
+```
+
+## import data
+```{r}
+Framingham <- read_excel("Framingham.xls", 
+    sheet = "Framington-Heart-study", col_types = c("numeric", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "skip", "numeric", "numeric"))
+
+Framingham$sex <- as.factor(Framingham$sex)
+Framingham$month <- as.factor(Framingham$month)
+
+dim(Framingham) #4699 * 10
+```
+
+## 시도1. NA 제거한 데이터로 모델링
+```{r}
+Framingham <- Framingham[complete.cases(Framingham),] %>% mutate(
+  bp.range = sbp - dbp,
+  bmi.factor = ordered(ifelse(bmi < 18.5, "underweight",
+                        ifelse(18.5 <= bmi & bmi < 25, "healthy",
+                               ifelse(25 <= bmi & bmi < 30, "overweight",
+                                      ifelse(30 <= bmi & bmi < 40, "obesity", "severe obesity")))), levels = c("underweight","healthy","overweight","obesity","severe obesity")),
+  bp = ordered(ifelse((sbp >= 180) | (dbp>=120), "high3",
+              ifelse((sbp >= 140) | (dbp >= 90), "high2",
+                     ifelse((sbp>=130 & sbp < 140) | (dbp >=80 & dbp < 90), "high1",
+                            ifelse((sbp >= 120 & sbp < 130) & (dbp < 80), "elevated", "normal")))), levels = c("normal","elevated","high1","high2","high3"))) #4658 * 13
+
+```
+
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+cox.t <- coxph(Surv(followup, chdfate)~.-id-sbp-dbp, data = Framingham)
+cox.t.step <-stepAIC(cox.t, direction = "both", trace = 0); extractAIC(cox.t.step)
+#22772.06
+# cox.t2 <- coxph(Surv(followup, chdfate)~.*., data = Framingham)
+# cox.t2.step <-stepAIC(cox.t2,direction = "both", trace = 0); extractAIC(cox.t2.step)
+
+
+cox.t <- coxph(Surv(followup, chdfate)~.-id, data = Framingham)
+cox.t.step <-stepAIC(cox.t, direction = "both", trace = 0); extractAIC(cox.t.step) #22758.91
+# cox.t2 <- coxph(Surv(followup, chdfate)~.*., data = Framingham)
+# cox.t2.step <-stepAIC(cox.t2,direction = "both", trace = 0); extractAIC(cox.t2.step)
+
+
+cox.t <- coxph(Surv(followup, chdfate)~.-id-bmi-sbp-month, data = Framingham)
+cox.t.step <-stepAIC(cox.t, direction = "both", trace = 0); extractAIC(cox.t.step) #22766.4
+# cox.t2 <- coxph(Surv(followup, chdfate)~.*., data = Framingham)
+# cox.t2.step <-stepAIC(cox.t2,direction = "both", trace = 0); extractAIC(cox.t2.step)
+```
+
+### NA 제거한 데이터에서 outlier detect 후 제거 & centering ($x - mean(x)$)
+```{r}
+#outlier detecting
+
+length(detect_outliers(Framingham, n=1, features=c("sbp","dbp","scl","age","bmi"))) #73
+Framingham.out1 <- Framingham[-detect_outliers(Framingham, n=1, features=c("sbp","dbp","scl","age","bmi")),] %>% mutate(age.fac = factor(ifelse(age<35,"age3034",ifelse(age<45,"age3544",ifelse(age<55,"age4554",ifelse(age<65,"age5564","age6569")))))) #4585 * 14
+Framingham.out1[,c(2:6,11)] <- scale(Framingham.out1[,c(2:6,11)], center = TRUE, scale = FALSE)
+
+length(detect_outliers(Framingham, n=2, features=c("sbp","dbp","scl","age","bmi"))) #7
+Framingham.out2 <- Framingham[-detect_outliers(Framingham, n=2, features=c("sbp","dbp","scl","age","bmi")),] %>% mutate(age.fac = factor(ifelse(age<35,"age3034",ifelse(age<45,"age3544",ifelse(age<55,"age4554",ifelse(age<65,"age5564","age6569")))))) #4651 * 14
+Framingham.out2[,c(2:6,11)] <- scale(Framingham.out2[,c(2:6,11)], center = TRUE, scale = FALSE)
+```
+
+```{r eval=FALSE, include=FALSE}
+#한 행에서 outlier가 2개 이상 존재할 시 제거한 데이터: Framingham.out1
+cox.t <- coxph(Surv(followup, chdfate)~.-id, data = Framingham.out1)
+cox.t.step <-stepAIC(cox.t, direction = "both", trace = 0); extractAIC(cox.t.step) #22103.77
+
+# halfnorm2 <- halfnorm.Fram %>% dplyr::select(-1)
+# cox.t2 <- coxph(Surv(followup, chdfate)~.*., data = halfnorm.Fram)
+# cox.t2.step <-stepAIC(cox.t2,direction = "both", trace = 0); extractAIC(cox.t2.step)
+
+
+cox.t <- coxph(Surv(followup, chdfate)~.-id-bmi-sbp-month, data = Framingham.out1)
+cox.t.step <-stepAIC(cox.t, direction = "both", trace = 0); extractAIC(cox.t.step) #22113.62
+
+
+#age factor 추가
+cox.t <- coxph(Surv(followup, chdfate)~.-id, data = Framingham.out1)
+cox.t.step <-stepAIC(cox.t, direction = "both", trace = 0); extractAIC(cox.t.step)
+#22103.77
+
+cox.t <- coxph(Surv(followup, chdfate)~.-id-bmi-sbp-month-age, data = Framingham.out1)
+cox.t.step <-stepAIC(cox.t, direction = "both", trace = 0); extractAIC(cox.t.step)
+#22127.3
+```
+
+```{r eval=FALSE, include=FALSE}
+#한 행에서 outlier가 3개 이상 존재할 시 제거한 데이터: Framingham.out2
+cox.t <- coxph(Surv(followup, chdfate)~.-id, data = Framingham.out2)
+cox.t.step <-stepAIC(cox.t, direction = "both", trace = 0); extractAIC(cox.t.step) #22705.71
+
+# halfnorm2 <- halfnorm.Fram %>% dplyr::select(-1)
+# cox.t2 <- coxph(Surv(followup, chdfate)~.*., data = halfnorm.Fram)
+# cox.t2.step <-stepAIC(cox.t2,direction = "both", trace = 0); extractAIC(cox.t2.step)
+
+
+cox.t <- coxph(Surv(followup, chdfate)~.-id-bmi-sbp-month, data = Framingham.out2)
+cox.t.step <-stepAIC(cox.t, direction = "both", trace = 0); extractAIC(cox.t.step) #22712.76
+
+
+#age factor 추가
+cox.t <- coxph(Surv(followup, chdfate)~.-id, data = Framingham.out2)
+cox.t.step <-stepAIC(cox.t, direction = "both", trace = 0); extractAIC(cox.t.step)
+#22705.71
+
+cox.t <- coxph(Surv(followup, chdfate)~.-id-bmi-sbp-month-age, data = Framingham.out2)
+cox.t.step <-stepAIC(cox.t, direction = "both", trace = 0); extractAIC(cox.t.step)
+#22725.38
+```
+
+
+## 시도 2. KNN imputation으로 NA 대체한 데이터
+```{r}
+#imputation
+Framingham <- read_excel("Framingham.xls", 
+    sheet = "Framington-Heart-study", col_types = c("numeric", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "skip", "numeric", "numeric"))
+
+Framingham$sex <- as.factor(Framingham$sex)
+Framingham$month <- as.factor(Framingham$month)
+
+Framingham.all <- cbind(Framingham[,1], myimputation(as.data.frame(Framingham[,2:8])), Framingham[,c(9,10)])
+```
+
+
+```{r}
+Framingham.all <- Framingham.all %>% mutate(
+  bp.range = sbp - dbp,
+  
+  bmi.factor = factor(ifelse(bmi < 18.5, "underweight",
+                        ifelse(18.5 <= bmi & bmi < 25, "healthy",
+                               ifelse(25 <= bmi & bmi < 30, "overweight",
+                                      ifelse(30 <= bmi & bmi < 40, "obesity", "severe obesity")))), levels=c("underweight","healthy","overweight","obesity","severe obesity")),
+  
+  bp = factor(ifelse((sbp >= 180) | (dbp>=120), "high3",
+              ifelse((sbp >= 140) | (dbp >= 90), "high2",
+                     ifelse((sbp>=130 & sbp < 140) | (dbp >=80 & dbp < 90), "high1",
+                            ifelse((sbp >= 120 & sbp < 130) & (dbp < 80), "elevated", "normal")))), levels=c("normal","elevated","high1","high2","high3")),
+  
+  age.fac = factor(ifelse(age<35,"age3034",ifelse(age<45,"age3544",ifelse(age<55,"age4554",ifelse(age<65,"age5564","age6569"))))),
+  
+         age_point = ifelse(age %in% 20:34,-7,ifelse(age %in% 35:39,-3,ifelse(age %in% 40:44,0, ifelse(age %in% 45:49,3, ifelse(age %in% 50:54,6,ifelse(age%in% 55:59, 8, ifelse(age %in% 60:64, 10, 12))))))),
+  
+         sbp_point = ifelse(sbp<120,0,ifelse(sbp<130,1,ifelse(sbp<140,2,ifelse(sbp<160,3,4))))) #4658 * 16
+
+Framingham.all$sex <- as.factor(Framingham.all$sex)
+Framingham.all$month <- as.factor(Framingham.all$month)
+```
+
+
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+#한 행에서 outlier가 2개 이상 존재할 시 제거한 데이터: Framingham.all.out1
+length(detect_outliers(Framingham.all, n=1, features=c("sbp","dbp","scl","age","bmi"))) #73
+Framingham.all.out1 <- Framingham.all[-detect_outliers(Framingham.all, n=1, features=c("sbp","dbp","scl","age","bmi")),] #4585 * 16
+Framingham.all.out1[,c(2:6,11)] <- scale(Framingham.all.out1[,c(2:6,11)], center = TRUE, scale = FALSE)
+```
+
+
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+#원변수만 넣기
+cox.t <- coxph(Surv(followup, chdfate)~sbp + dbp + scl + age + bmi + month + sex, data = Framingham.all.out1)
+cox.t.step <-stepAIC(cox.t, direction = "both", trace = 0); extractAIC(cox.t.step) #22244.38
+
+cox.t2 <- coxph(Surv(followup, chdfate)~.*., data = Framingham.all.out1[,2:10])
+cox.t2.step <-stepAIC(cox.t2,direction = "both", trace = 0); extractAIC(cox.t2.step) #22239.83
+
+aic1 <- rbind(extractAIC(cox.t2.step)[1], extractAIC(cox.t2.step)[2])
+
+#scl, month, sex, bp, bmi.factor, age.fac (factor형태와 원변수인 scl, month 만 넣기)
+cox.t <- coxph(Surv(followup, chdfate)~., data = Framingham.all.out1[,c(4,7:10,12:14)])
+cox.t.step <-stepAIC(cox.t, direction = "both", trace = 0); extractAIC(cox.t.step) #22281.87
+
+cox.t2 <- coxph(Surv(followup, chdfate)~.*., data = Framingham.all.out1[,c(4,7:10,12:14)])
+cox.t2.step <-stepAIC(cox.t2,direction = "both", trace = 0); extractAIC(cox.t2.step) #22281.87
+
+
+#bmi.factor, bp만 넣었을 때
+Framingham.all.out1$bmi.factor <- as.factor(Framingham.all.out1$bmi.factor)
+Framingham.all.out1$bp <- as.factor(Framingham.all.out1$bp)
+
+cox.t.b <- coxph(Surv(followup, chdfate)~., data = Framingham.all.out1[,c(4,5,7:10,12:13)])
+cox.t.step.b <-stepAIC(cox.t.b, direction = "both", trace = 0); extractAIC(cox.t.step.b) #22267.81
+
+cox.t2.b <- coxph(Surv(followup, chdfate)~.*., data = Framingham.all.out1[,c(4,5,7:10,12:13)])
+cox.t2.step.b <-stepAIC(cox.t2.b,direction = "both", trace = 0); extractAIC(cox.t2.step.b) #22239.83
+
+aic2 <- rbind(extractAIC(cox.t2.step.b)[1], extractAIC(cox.t2.step.b)[2])
+
+
+#point 변수 넣기 (dbp, scl, bmi, month, sex, chdfate, followup, age_point, sbp_point)
+cox.t.c <- coxph(Surv(followup, chdfate)~., data = Framingham.all.out1[,c(3,4,6,7,8,9,10,15,16)])
+cox.t.step.c <-stepAIC(cox.t.c, direction = "both", trace = 0); extractAIC(cox.t.step.c) #22269.31
+
+cox.t2.c <- coxph(Surv(followup, chdfate)~.*., data = Framingham.all.out1[,c(3,4,6,7,8,9,10,15,16)])
+cox.t2.step.c <-stepAIC(cox.t2.c,direction = "both", trace = 0); extractAIC(cox.t2.step.c) #22268.78
+
+aic3 <- rbind(extractAIC(cox.t2.step.c)[1], extractAIC(cox.t2.step.c)[2])
+
+
+#age.fac만 넣어보기
+cox.t.d <- coxph(Surv(followup, chdfate)~., data = Framingham.all.out1[,-c(1,5,11,12,13,15,16)])
+cox.t.step.d <-stepAIC(cox.t.d, direction = "both", trace = 0); extractAIC(cox.t.step.d) #22258.29
+
+cox.t2.d <- coxph(Surv(followup, chdfate)~.*., data = Framingham.all.out1[,-c(1,5,11,12,13,15,16)])
+cox.t2.step.d <-stepAIC(cox.t2.d,direction = "both", trace = 0); extractAIC(cox.t2.step.d) #22254.01
+
+aic4 <- rbind(extractAIC(cox.t2.step.d)[1], extractAIC(cox.t2.step.d)[2])
+
+
+#bmi.factor만 넣어보기
+cox.t <- coxph(Surv(followup, chdfate)~., data = Framingham.all.out1[,-c(1,6,11,13,14,15,16)])
+cox.t.step <-stepAIC(cox.t, direction = "both", trace = 0); extractAIC(cox.t.step) #22254.15
+
+cox.t2 <- coxph(Surv(followup, chdfate)~.*., data = Framingham.all.out1[,-c(1,6,11,13,14,15,16)])
+cox.t2.step <-stepAIC(cox.t2,direction = "both", trace = 0); extractAIC(cox.t2.step) #22248.56
+
+#bp.range로 sbp, dbp 대체하기
+cox.t <- coxph(Surv(followup, chdfate)~., data = Framingham.all.out1[,-c(1,2,3,12,13,14,15,16)])
+cox.t.step <-stepAIC(cox.t, direction = "both", trace = 0); extractAIC(cox.t.step) #22278.29
+
+cox.t2 <- coxph(Surv(followup, chdfate)~.*., data = Framingham.all.out1[,-c(1,2,3,12,13,14,15,16)])
+cox.t2.step <-stepAIC(cox.t2,direction = "both", trace = 0); extractAIC(cox.t2.step) #22273.25
+
+
+aic.all <- cbind(aic1, aic2, aic3, aic4) %>% `colnames<-`(paste0("cox.step",1:4)) %>% `row.names<-`(c("no","aic"))
+
+print(aic.all)
+```
+
+
+## 시도 3. KNN imputation -> 73 outliers removed --> **log 변환** -> mean으로 나눠서 centering
+```{r message=FALSE, warning=FALSE}
+Framingham.all.out1 <- Framingham.all[-detect_outliers(Framingham.all, n=1, features=c("sbp","dbp","scl","age","bmi")),] #4626 * 16
+
+mean1<-apply(Framingham.all.out1[c("sbp","dbp","scl","age","bmi")],2,mean)
+
+dat_log_centered <- Framingham.all.out1 %>% mutate(sbp=log(sbp/mean1["sbp"]), dbp=log(dbp/mean1["dbp"]), scl=log(scl/mean1["scl"]), bmi=log(bmi/mean1["bmi"])) %>%
+  mutate(age.fac = factor(ifelse(age<35,"age3034",ifelse(age<45,"age3544",ifelse(age<55,"age4554",ifelse(age<65,"age5564","age6569")))))) #4626 * 16
+```
+
+
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+cox.t <- coxph(Surv(followup, chdfate)~., data = dat_log_centered[,2:10])
+cox.t.step <-stepAIC(cox.t, direction = "both", trace = 0); extractAIC(cox.t.step) #22248.25
+
+cox.t2 <- coxph(Surv(followup, chdfate)~.*., data = dat_log_centered[,2:10])
+cox.t2.step <-stepAIC(cox.t2,direction = "both", trace = 0); extractAIC(cox.t2.step) #22242.8
+
+aic1.log <- rbind(extractAIC(cox.t2.step)[1], extractAIC(cox.t2.step)[2])
+
+
+#bmi.factor, bp만 넣었을 때
+cox.t.b <- coxph(Surv(followup, chdfate)~., data = dat_log_centered[,c(4,5,7:10,12:13)])
+cox.t.step.b <-stepAIC(cox.t.b, direction = "both", trace = 0); extractAIC(cox.t.step.b) #22269.36
+
+cox.t2.b <- coxph(Surv(followup, chdfate)~.*., data = dat_log_centered[,c(4,5,7:10,12:13)])
+cox.t2.step.b <-stepAIC(cox.t2.b,direction = "both", trace = 0); extractAIC(cox.t2.step.b) #22267.8
+
+aic2.log <- rbind(extractAIC(cox.t2.step.b)[1], extractAIC(cox.t2.step.b)[2])
+
+
+#point 변수 넣기 (dbp, scl, bmi, month, sex, chdfate, followup, age_point, sbp_point)
+cox.t.c <- coxph(Surv(followup, chdfate)~., data = dat_log_centered[,c(3,4,6,7,8,9,10,15,16)])
+cox.t.step.c <-stepAIC(cox.t.c, direction = "both", trace = 0); extractAIC(cox.t.step.c) #22272.47
+
+cox.t2.c <- coxph(Surv(followup, chdfate)~.*., data = dat_log_centered[,c(3,4,6,7,8,9,10,15,16)])
+cox.t2.step.c <-stepAIC(cox.t2.c,direction = "both", trace = 0); extractAIC(cox.t2.step.c) #22270.87
+
+aic3.log <- rbind(extractAIC(cox.t2.step.c)[1], extractAIC(cox.t2.step.c)[2])
+
+
+#age.fac만 넣어보기
+cox.t.d <- coxph(Surv(followup, chdfate)~., data = dat_log_centered[,-c(1,5,11,12,13,15,16)])
+cox.t.step.d <-stepAIC(cox.t.d, direction = "both", trace = 0); extractAIC(cox.t.step.d) #22261.77
+
+cox.t2.d <- coxph(Surv(followup, chdfate)~.*., data = dat_log_centered[,-c(1,5,11,12,13,15,16)])
+cox.t2.step.d <-stepAIC(cox.t2.d,direction = "both", trace = 0); extractAIC(cox.t2.step.d) #22254.64
+
+aic4.log <- rbind(extractAIC(cox.t2.step.d)[1], extractAIC(cox.t2.step.d)[2])
+
+
+aic.all.log <- cbind(aic1.log, aic2.log, aic3.log, aic4.log) %>% `colnames<-`(paste0("cox.step",1:4)) %>% `row.names<-`(c("no","aic"))
+
+print(aic.all.log)
+
+
+#scl, month, sex, bp, bmi.factor, age.fac (factor형태와 원변수인 scl, month 만 넣기)
+cox.t <- coxph(Surv(followup, chdfate)~., data = dat_log_centered[,c(4,7:10,12:14)])
+cox.t.step <-stepAIC(cox.t, direction = "both", trace = 0); extractAIC(cox.t.step) #22282.59
+
+cox.t2 <- coxph(Surv(followup, chdfate)~.*., data = dat_log_centered[,c(4,7:10,12:14)])
+cox.t2.step <-stepAIC(cox.t2,direction = "both", trace = 0); extractAIC(cox.t2.step) #22282.59
+```
+
+
+## Part2. ALT  
+### i) 시도2 데이터 사용 (KNN imputation + 73 outliers removed + mean-centering) [기각]
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=TRUE}
+#weibull
+alt.w <- survreg(Surv(followup,chdfate)~., data = Framingham.all.out1[,c(4,7:10,12:14)], dist = 'weibull') #31147.81
+alt.w.i <- survreg(Surv(followup,chdfate)~.*., data = Framingham.all.out1[,c(4,7:10,12:14)], dist = 'weibull') #33806.26
+
+alt.w.step <-step(alt.w,trace=F) #31142.54
+alt.w.i.step <-step(alt.w.i,trace=F) #31142.54
+#scl + sex + bmi.factor + bp + age.fac
+
+#loglogistic
+alt.l <- survreg(Surv(followup,chdfate)~., data = Framingham.all.out1[,c(4,7:10,12:14)], dist = 'loglogistic')
+alt.l.i <- survreg(Surv(followup,chdfate)~.*., data = Framingham.all.out1[,c(4,7:10,12:14)], dist = 'loglogistic')
+
+alt.l.step<-step(alt.l,trace=F)
+alt.l.i.step<-step(alt.l.i,trace=F)
+
+#lognormal
+alt.ln <- survreg(Surv(followup,chdfate)~., data = Framingham.all.out1[,c(4,7:10,12:14)], dist = 'lognormal')
+alt.ln.i <- survreg(Surv(followup,chdfate)~.*., data = Framingham.all.out1[,c(4,7:10,12:14)], dist = 'lognormal')
+
+alt.ln.step<-step(alt.ln,trace=F)
+alt.ln.i.step<-step(alt.ln.i,trace=F)
+
+#logistic
+alt.log <- survreg(Surv(followup,chdfate )~., data = Framingham.all.out1[,c(4,7:10,12:14)], dist = 'logistic')
+alt.log.i <- survreg(Surv(followup,chdfate )~.*., data = Framingham.all.out1[,c(4,7:10,12:14)], dist = 'logistic')
+
+alt.log.step<-step(alt.log,trace=F)
+alt.log.i.step<-step(alt.log.i,trace=F)
+
+
+aic.w<-rbind(simple=extractAIC(alt.w),
+             interaction=extractAIC(alt.w.i),
+             simple.step=extractAIC(alt.w.step),
+             interaction.step=extractAIC(alt.w.i.step))
+
+aic.l<-rbind(simple=extractAIC(alt.l),
+             interaction=extractAIC(alt.l.i),
+             simple.step=extractAIC(alt.l.step),
+             interaction.step=extractAIC(alt.l.i.step))
+
+aic.ln<-rbind(simple=extractAIC(alt.ln),
+              interaction=extractAIC(alt.ln.i),
+              simple.step=extractAIC(alt.ln.step),
+              interaction.step=extractAIC(alt.ln.i.step))
+
+aic.log<-rbind(simple=extractAIC(alt.log),
+               interaction=extractAIC(alt.log.i),
+               simple.step=extractAIC(alt.log.step),
+               interaction.step=extractAIC(alt.log.i.step))
+
+aic<-cbind(aic.w,aic.l,aic.ln,aic.log)
+colnames(aic) <- c('no', 'weibull', 'no', 'loglogistic',
+                   'no', 'lognormal', 'no', 'logistic')
+aic <- data.frame(aic)
+aic 
+```
+
+### ii) 시도3 데이터 사용 (KNN imputation + 73 outliers removed + **log transformation** + mean-divided) [채택]
+```{r message=FALSE, warning=FALSE}
+#weibull
+alt.w <- survreg(Surv(followup,chdfate)~., data = dat_log_centered[,c(4,7:10,12:14)], dist = 'weibull') #31148.71
+alt.w.i <- survreg(Surv(followup,chdfate)~.*., data = dat_log_centered[,c(4,7:10,12:14)], dist = 'weibull') #32229.55
+
+alt.w.step <-step(alt.w,trace=F) #31143.87
+alt.w.i.step <-step(alt.w.i,trace=F) #31143.87
+#scl + sex + bmi.factor + bp + age.fac
+
+#loglogistic
+alt.l <- survreg(Surv(followup,chdfate)~., data = dat_log_centered[,c(4,7:10,12:14)], dist = 'loglogistic')
+alt.l.i <- survreg(Surv(followup,chdfate)~.*., data = dat_log_centered[,c(4,7:10,12:14)], dist = 'loglogistic')
+
+alt.l.step<-step(alt.l,trace=F)
+alt.l.i.step<-step(alt.l.i,trace=F)
+
+#lognormal
+alt.ln <- survreg(Surv(followup,chdfate)~., data = dat_log_centered[,c(4,7:10,12:14)], dist = 'lognormal')
+alt.ln.i <- survreg(Surv(followup,chdfate)~.*., data = dat_log_centered[,c(4,7:10,12:14)], dist = 'lognormal')
+
+alt.ln.step<-step(alt.ln,trace=F)
+alt.ln.i.step<-step(alt.ln.i,trace=F)
+
+#logistic
+alt.log <- survreg(Surv(followup,chdfate )~., data = dat_log_centered[,c(4,7:10,12:14)], dist = 'logistic')
+alt.log.i <- survreg(Surv(followup,chdfate )~.*., data = dat_log_centered[,c(4,7:10,12:14)], dist = 'logistic')
+
+alt.log.step<-step(alt.log,trace=F)
+alt.log.i.step<-step(alt.log.i,trace=F)
+
+
+aic.w<-rbind(simple=extractAIC(alt.w),
+             interaction=extractAIC(alt.w.i),
+             simple.step=extractAIC(alt.w.step),
+             interaction.step=extractAIC(alt.w.i.step))
+
+aic.l<-rbind(simple=extractAIC(alt.l),
+             interaction=extractAIC(alt.l.i),
+             simple.step=extractAIC(alt.l.step),
+             interaction.step=extractAIC(alt.l.i.step))
+
+aic.ln<-rbind(simple=extractAIC(alt.ln),
+              interaction=extractAIC(alt.ln.i),
+              simple.step=extractAIC(alt.ln.step),
+              interaction.step=extractAIC(alt.ln.i.step))
+
+aic.log<-rbind(simple=extractAIC(alt.log),
+               interaction=extractAIC(alt.log.i),
+               simple.step=extractAIC(alt.log.step),
+               interaction.step=extractAIC(alt.log.i.step))
+
+aic<-cbind(aic.w,aic.l,aic.ln,aic.log)
+colnames(aic) <- c('no', 'weibull', 'no', 'loglogistic',
+                   'no', 'lognormal', 'no', 'logistic')
+aic <- data.frame(aic)
+aic 
+
+#best model: alt.w.i.step
+sigma <- alt.w.i.step$scale #0.6435329
+mu <- predict(alt.w.i.step,type = "lp")
+
+alt.data <- data.frame(u = (log(dat_log_centered$followup)-mu)/sigma) %>% mutate(r = rank(u), p = r/(length(dat_log_centered$followup)+1), weibull =  log(-log(1-p))) 
+
+ggplot(alt.data, aes(weibull, u)) + geom_point() + geom_smooth(method='lm', se = F) + ggtitle('Weibull Q-Q plot')+theme_minimal()
+```
+
+### b)
+```{r fig.height=10, fig.width=20}
+# alt.w.i.step %>% gtsummary::tbl_regression(exponentiate=T) %>% plot()
+
+alt_form <- survreg(formula = Surv(followup, chdfate) ~ scl + sex+ bmi.factor + bp + age.fac, data = dat_log_centered, dist = "weibull")
+
+autoplot(aareg(alt_form, dat_log_centered), ncol=4, scales="free")+theme_minimal()
+```
+
+
+## Part 3  
+### b)
+```{r}
+# alt
+u <- (log(3650)-mu)/sigma
+prob_alt <- (1-exp(-exp(u)))
+alt_hist <- hist(prob_alt, breaks = 20, xlab="ALT", main="Histogram of Probability (10years)")
+
+# plot
+# plot(p.cox, prob_alt, main='Probability of Cox vs ALT', xlab='COX', ylab='ALT')
+# 
+# plot(density(prob_alt), col='skyblue', lwd=2, main='Density Probability of Cox vs ALT')
+# lines(density(p.cox), col='lightsalmon', lwd=2)
+# legend("topright", legend = c("ALT", "COX"), col=c("skyblue","lightsalmon"), lwd=2, inset=0.05)
+```
+
+
+## Part 4
+### alt
+```{r warning = FALSE, message = FALSE}
+data.new <- dat_log_centered %>% mutate(t.star = age*365.25+followup) %>% dplyr::select(-followup, -age)
+
+#weibull
+alt.w <- survreg(Surv(t.star,chdfate)~., data = data.new[,c(4,7:8,10:11,15)], dist = 'weibull')
+alt.w.i <- survreg(Surv(t.star,chdfate)~.*., data = data.new[,c(4,7:8,10:11,15)], dist = 'weibull')
+
+alt.w.step<-step(alt.w,trace=F)
+alt.w.i.step<-step(alt.w.i,trace=F)
+
+#loglogistic
+alt.l <- survreg(Surv(t.star,chdfate)~., data = data.new[,c(4,7:8,10:11,15)], dist = 'loglogistic')
+alt.l.i <- survreg(Surv(t.star,chdfate)~.*., data = data.new[,c(4,7:8,10:11,15)], dist = 'loglogistic')
+
+alt.l.step<-step(alt.l,trace=F)
+alt.l.i.step<-step(alt.l.i,trace=F)
+
+#lognormal
+alt.ln <- survreg(Surv(t.star,chdfate )~., data = data.new[,c(4,7:8,10:11,15)], dist = 'lognormal')
+alt.ln.i <- survreg(Surv(t.star,chdfate)~.*., data = data.new[,c(4,7:8,10:11,15)], dist = 'lognormal')
+
+alt.ln.step<-step(alt.ln,trace=F)
+alt.ln.i.step<-step(alt.ln.i,trace=F)
+
+
+#logistic
+alt.log <- survreg(Surv(t.star,chdfate )~., data = data.new[,c(4,7:8,10:11,15)], dist = 'logistic')
+alt.log.i <- survreg(Surv(t.star,chdfate )~.*., data = data.new[,c(4,7:8,10:11,15)], dist = 'logistic')
+
+alt.log.step<-step(alt.log,trace=F)
+alt.log.i.step<-step(alt.log.i,trace=F)
+
+
+aic.w<-rbind(simple=AIC(alt.w),interction=AIC(alt.w.i),
+             simple.step=AIC(alt.w.step),interaction.step=AIC(alt.w.i.step))
+
+aic.l<-rbind(simple=AIC(alt.l),interction=AIC(alt.l.i),
+             simple.step=AIC(alt.l.step),interaction.step=AIC(alt.l.i.step))
+
+aic.ln<-rbind(simple=AIC(alt.ln),interction=AIC(alt.ln.i),
+              simple.step=AIC(alt.ln.step),interaction.step=AIC(alt.ln.i.step))
+
+aic.log<-rbind(simple=AIC(alt.log),interction=AIC(alt.log.i),
+               simple.step=AIC(alt.log.step),interaction.step=AIC(alt.log.i.step))
+
+aic<-cbind(aic.w,aic.l,aic.ln,aic.log)
+colnames(aic) <- c('weibull','loglogistic','lognormal','logistic')
+aic <- data.frame(aic)
+aic
+```
+
+
+```{r warning = FALSE, message = FALSE}
+# lognormal  & interaction term
+# best : alt.ln.i.step
+
+alt2<-alt.ln.i.step
+
+sigma2 <- alt2$scale
+mu2 <- predict(alt2,type = "lp")
+
+alt.data2 <- data.frame(u =(log(data.new$t.star)-mu2)/sigma2) %>%
+  mutate(r = rank(u), p = r/(length(data.new$t.star)+1), lognormal = qnorm(p))
+ggplot(alt.data2, aes(lognormal, u)) + geom_point() + geom_smooth(method='lm', se = F) + ggtitle('lognormal Q-Q plot')
+
+t <- dat_log_centered$age*365.25+3650
+u2 <- (log(t)-mu2)/sigma2
+prob_alt2 <- pnorm(u2)
+
+# plot
+hist(prob_alt2, breaks = 30,  xlab="age x 365.25 + followup", main="Histogram of ALT Probability (10years)")
+
+plot(density(prob_alt2), col="skyblue", lwd=2, main="Probability Comparing of ALT", xlab="")
+lines(density(prob_alt), col="lightsalmon", lwd=2)
+legend("topright", legend = c("age x 365.25 + followup", "followup"), col=c("skyblue","lightsalmon"), lwd=2, inset=0.05)
+
+plot(prob_alt,prob_alt2, xlab="followup", ylab="age x 365.25 + followup", main="Probability Comparing of ALT")
+abline(0,1, col="blue", lty=2)
+```
+
