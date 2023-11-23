@@ -40,7 +40,7 @@ train<-dat[is.na(dat$부도여부)==FALSE,]; dim(train)
 test<-dat[is.na(dat$부도여부)==TRUE,]; test<-test[1:45];dim(test)
 names(dat) %>% sort #test에는 calender times, 부도여부 없음
 ```
-
+### 전처리 ------------------------------------------------------------------------------
 
 ```{r include=FALSE}
 #최종본
@@ -94,30 +94,6 @@ myNAindex<-function(mydf, type){
 ```
 
 
-
-```{r eval=FALSE, include=FALSE}
-#ㄴㄴ
-myNAindex<-function(mydf, type){
-  temp1<-data.frame(index=1:nrow(mydf), isNA=rep(0,nrow(dat)))
-  # 나이 + 총자산투자효율~총자본회전율 NA
-  if(type==3){temp1$isNA<-rowSums(is.na(mydf[,22:41]))==20}
-  # 나이만 NA
-  else if(type==1){temp1$isNA<-is.na(mydf$`나이`)}
-  # 총자산투자효율~총자본회전율만 NA
-  else if(type==2){temp1$isNA<-rowSums(is.na(mydf[,22:40]))==19}
-  # 경영자본회전율~총자본회전율 + 로그매출액 NA
-  else if(type==4){temp1$isNA<-rowSums(is.na(mydf[,c(33:40,42)]))==9}
-  # 자본금순이익율 + 자본금회전율 NA
-  else if(type==5){temp1$isNA<-rowSums(is.na(mydf[,c(28,38)]))==2}
-  # 고정부채비율 NA
-  else if(type==6){temp1$isNA<-is.na(mydf$`고정부채비율`)}
-  
-  res<-temp1$index[temp1$isNA==1]
-  return(res)
-}
-```
-
-
 [train1, test1 = NA 1차 제거한 것(총자산투자효율~회전율 NA)]{style="background-color: #fff5b1; font-size:120%"}
 
 
@@ -159,56 +135,7 @@ train2[train2$ID %in% c(974,1126),42]<-0
 
 [imputation]{style="background-color: #fff5b1; font-size:120%"}
 
-민지언니 방식으로
-
-```{r include=FALSE}
-myimputation <- function(x, k=10) {
-  central.value <- function(x) {
-    if (is.numeric(x)) {
-      median(x,na.rm=T)
-    }else if (is.factor(x)) {
-      levels(x)[which.max(table(x))] 
-    }else { 
-      f <- as.factor(x)
-      levels(f)[which.max(table(f))]
-    }
-  }
-  dist.mtx <- as.matrix(daisy(x,stand=T))
-  
-  for(r in which(!complete.cases(x))){
-    x[r,which(is.na(x[r,]))] <- apply(data.frame(x[c(as.integer(names(sort(dist.mtx[r,])[2:(k+1)]))), which(is.na(x[r,]))]), 2,central.value)
-  }
-  return(x)
-}
-
-replace.99 <- function(data) {
-  for (i in 2:ncol(data)) {
-    missing_rows <- which(is.na(data[, i]))
-    
-    if (length(missing_rows) > 0) {
-      if (sum(!is.na(data[missing_rows, i]) & data[missing_rows, i] == 9999.990) > 0 | 
-         sum(!is.na(data[missing_rows, i]) & data[missing_rows, i] == -9999.990) > 0) {
-        
-        if (sum(!is.na(data[missing_rows, i]) & data[missing_rows, i] == 9999.990) > 0) {
-          quantile_value <- quantile(data[data[, i] != 9999.990, i], probs = 0.99, na.rm = TRUE)
-          data[missing_rows[data[missing_rows, i] == 9999.990], i] <- quantile_value
-        }
-        if (sum(!is.na(data[missing_rows, i]) & data[missing_rows, i] == -9999.990) > 0) {
-          quantile_value <- quantile(data[data[, i] != -9999.990, i], probs = 0.01, na.rm = TRUE)
-          data[missing_rows[data[missing_rows, i] == -9999.990], i] <- quantile_value
-        }
-      }
-    }
-    else{
-       if(sum(data[, i] == 9999.990) > 0 | sum(data[, i] == -9999.990) > 0){
-      data[data[, i] == 9999.990,i] <- quantile(data[data[,i]!=9999.990,i], probs=0.99, na.rm=TRUE)
-      data[data[, i] == -9999.990,i] <- quantile(data[data[,i]!=-9999.990,i], probs=0.01, na.rm=TRUE)
-       }
-    }
-  }
-  return(data)
-}
-```
+사용자 정의 함수 : myimputation + replace.99 정의
 
 ```{r}
 train_completed2<-replace.99(train2)
@@ -251,11 +178,17 @@ train_completed31$부도여부<-as.factor(train_completed31$부도여부-1)
 summary(train_completed31)
 ```
 
+최종 데이터 `train_completed31`
+
+
+### FITTING (Part.1) ------------------------------------------------------------------------------
+
+
 [GLM]{style="background-color: #fff5b1; font-size:120%"}
 
 
  
-```{r}
+```{r warning=FALSE}
 ## fitting 61 ##
 glm61<-glm(부도여부 ~ `유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), family = binomial(link = "probit"), data = train_completed31)
 # extractAIC(glm61) 860.3904
@@ -275,6 +208,7 @@ pred_class62<-ifelse(pred_prob62 < 0.00515,1,0)
 table(train_completed3$부도여부, pred_class62) #4개
 ```
 
+로그/지수변환 검토했던 코드
 
 ```{r eval=FALSE}
 boxplot(train_completed31$`자기자본순이익율`/train_completed31$`자기자본회전율`~train_completed31[,46])
@@ -293,20 +227,9 @@ for(i in 42:43){
 
 [GAM]{style="background-color: #fff5b1; font-size:120%"}
 
+-  ztable 출력물은 html임
 
-```{r include=FALSE}
-ggCompare=function(data,y,group){
-    
-    yvar=as.character(substitute(y))
-    groupvar=as.character(substitute(group))
-    
-    if(!is.factor(data[[groupvar]])) data[[groupvar]]=factor(data[[groupvar]])
-    p1=ggplot(data,aes_string(x=yvar,fill=groupvar))+geom_density(alpha=0.5,size=0.3)+theme_article()+theme(legend.position="None")
-    p2=ggplot(data,aes_string(x=groupvar,y=yvar,fill=groupvar))+geom_boxplot(alpha=0.5)+theme_article()+theme(legend.position="None")
-    ggpubr::ggarrange(p1,p2,ncol=2)
-}
-```
-
+-  ggcompare는 그룹별로 ggplot 그려주는 함수 정의한 거
 
 ```{r message=FALSE}
 #변수관계..
@@ -357,7 +280,7 @@ ggCompare(train_completed32, y=x40, group=delta)
 #ggCompare(train_completed32, y=x47, group=delta)
 #ggCompare(train_completed32, y=x48, group=delta)
 z=ztable(mytable(delta~x31+x38+x39, data=train_completed32))
-print(z, type="html")
+#print(z, type="html")
 ```
 
 
