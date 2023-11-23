@@ -1,0 +1,417 @@
+---
+title: "11/12 - 2"
+author: "238STG02 이민주"
+date: "2023-11-12"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r include=FALSE}
+library(optimx)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(readxl)
+library(leaps)
+library(MASS)
+library(kableExtra)
+library(reshape2)
+library(lubridate)
+library(readr)
+library(scales)
+library(patchwork)
+library(forecast)
+library(ggfortify)
+library(ggpubr)
+library(caret)
+library(DescTools)
+library(cluster)
+options(scipen=99)
+```
+
+
+```{r}
+setwd("~/Desktop/2023-2/이론통계학II/HW8")
+dat <- read_excel("2023-HW#8-과제용 (1).xls")
+train<-dat[is.na(dat$부도여부)==FALSE,]; dim(train)
+test<-dat[is.na(dat$부도여부)==TRUE,]; test<-test[1:45];dim(test)
+names(dat) %>% sort #test에는 calender times, 부도여부 없음
+```
+
+
+```{r include=FALSE}
+#최종본
+myNAindex<-function(mydf, type){
+  temp1<-temp2<-data.frame(index=1:nrow(mydf), isNA=rep(0,nrow(mydf)))
+  # 나이만 NA
+  if(type==1){
+    temp1$isNA<-is.na(mydf$`나이`)
+    temp2$isNA<-rowSums(is.na(mydf[,22:41]))==20
+    res<-setdiff(temp1$index[temp1$isNA==1], temp2$index[temp2$isNA==1])
+  }
+  # 총자산투자효율~총자본회전율만 NA
+  else if(type==2){
+    temp1$isNA<-rowSums(is.na(mydf[,22:40]))==19
+    temp2$isNA<-rowSums(is.na(mydf[,22:41]))==20
+    res<-setdiff(temp1$index[temp1$isNA==1], temp2$index[temp2$isNA==1])
+  }
+  # 나이 + 총자산투자효율~총자본회전율 다 NA
+  else if(type==3){
+    temp1$isNA<-rowSums(is.na(mydf[,22:41]))==20
+    res<-temp1$index[temp1$isNA==1]
+  }
+  # 경영자본회전율~총자본회전율 + 로그매출액 NA
+  else if(type==4){
+    temp1$isNA<-rowSums(is.na(mydf[,c(33:40,42)]))==9
+    res<-temp1$index[temp1$isNA==1]
+  }
+  # 자본금순이익율 + 자본금회전율만 NA
+  else if(type==5){
+    temp1$isNA<-rowSums(is.na(mydf[,c(28,38)]))==2
+    temp2$isNA<-rowSums(is.na(mydf[,22:40]))==19
+    res<-setdiff(temp1$index[temp1$isNA==1], temp2$index[temp2$isNA==1])
+    }
+  # 고정부채비율 NA
+  else if(type==6){
+    temp1$isNA<-is.na(mydf$`고정부채비율`)
+    res<-temp1$index[temp1$isNA==1]
+  }
+  
+  
+  return(res)
+}
+
+#myNAindex(dat, type=1)
+#myNAindex(dat, type=2)
+#myNAindex(dat, type=3)
+#myNAindex(dat, type=4)
+#myNAindex(dat, type=5)
+#myNAindex(dat, type=6)
+#length(myNAindex(dat, type=1))+length(myNAindex(dat, type=2))+length(myNAindex(dat, type=3))+length(myNAindex(dat, type=4))+length(myNAindex(dat, type=5))+length(myNAindex(dat, type=6))
+```
+
+
+
+```{r eval=FALSE, include=FALSE}
+#ㄴㄴ
+myNAindex<-function(mydf, type){
+  temp1<-data.frame(index=1:nrow(mydf), isNA=rep(0,nrow(dat)))
+  # 나이 + 총자산투자효율~총자본회전율 NA
+  if(type==3){temp1$isNA<-rowSums(is.na(mydf[,22:41]))==20}
+  # 나이만 NA
+  else if(type==1){temp1$isNA<-is.na(mydf$`나이`)}
+  # 총자산투자효율~총자본회전율만 NA
+  else if(type==2){temp1$isNA<-rowSums(is.na(mydf[,22:40]))==19}
+  # 경영자본회전율~총자본회전율 + 로그매출액 NA
+  else if(type==4){temp1$isNA<-rowSums(is.na(mydf[,c(33:40,42)]))==9}
+  # 자본금순이익율 + 자본금회전율 NA
+  else if(type==5){temp1$isNA<-rowSums(is.na(mydf[,c(28,38)]))==2}
+  # 고정부채비율 NA
+  else if(type==6){temp1$isNA<-is.na(mydf$`고정부채비율`)}
+  
+  res<-temp1$index[temp1$isNA==1]
+  return(res)
+}
+```
+
+
+[train1, test1 = NA 1차 제거한 것(총자산투자효율~회전율 NA)]{style="background-color: #fff5b1; font-size:120%"}
+
+
+-   모든 행 삭제
+
+-   train 9개, test 13개
+
+
+```{r}
+train1<-train[!train$ID %in% myNAindex(train, type=2),]
+train1<-train1[!train1$ID %in% myNAindex(train, type=3),]
+test1<-test[!test$ID %in% (myNAindex(test, type=2)+3168),]
+test1<-test1[!test1$ID %in% (myNAindex(test, type=3)+3168),]
+test1$업종<-as.factor(test1$업종)
+test1$규모<-as.factor(test1$규모)
+train1$업종<-as.factor(train1$업종)
+train1$규모<-as.factor(train1$규모)
+train1$부도여부<-as.factor(train1$부도여부)
+#summary(test1[,41:45])
+#summary(train1[,41:45])
+```
+
+```{r}
+train1 %>% print()
+test1 %>% print()
+```
+
+
+[train2 = 회전율 NA에 매출액 = 0 대입한 거]{style="background-color: #fff5b1; font-size:120%"}
+
+
+```{r}
+myNAindex(train, type=4) #회전율 NA인 애들
+train2<-train1
+train2[train2$ID %in% c(974,1126),33:40]<-0
+train2[train2$ID %in% c(974,1126),42]<-0
+```
+
+
+[imputation]{style="background-color: #fff5b1; font-size:120%"}
+
+민지언니 방식으로
+
+```{r include=FALSE}
+myimputation <- function(x, k=10) {
+  central.value <- function(x) {
+    if (is.numeric(x)) {
+      median(x,na.rm=T)
+    }else if (is.factor(x)) {
+      levels(x)[which.max(table(x))] 
+    }else { 
+      f <- as.factor(x)
+      levels(f)[which.max(table(f))]
+    }
+  }
+  dist.mtx <- as.matrix(daisy(x,stand=T))
+  
+  for(r in which(!complete.cases(x))){
+    x[r,which(is.na(x[r,]))] <- apply(data.frame(x[c(as.integer(names(sort(dist.mtx[r,])[2:(k+1)]))), which(is.na(x[r,]))]), 2,central.value)
+  }
+  return(x)
+}
+
+replace.99 <- function(data) {
+  for (i in 2:ncol(data)) {
+    missing_rows <- which(is.na(data[, i]))
+    
+    if (length(missing_rows) > 0) {
+      if (sum(!is.na(data[missing_rows, i]) & data[missing_rows, i] == 9999.990) > 0 | 
+         sum(!is.na(data[missing_rows, i]) & data[missing_rows, i] == -9999.990) > 0) {
+        
+        if (sum(!is.na(data[missing_rows, i]) & data[missing_rows, i] == 9999.990) > 0) {
+          quantile_value <- quantile(data[data[, i] != 9999.990, i], probs = 0.99, na.rm = TRUE)
+          data[missing_rows[data[missing_rows, i] == 9999.990], i] <- quantile_value
+        }
+        if (sum(!is.na(data[missing_rows, i]) & data[missing_rows, i] == -9999.990) > 0) {
+          quantile_value <- quantile(data[data[, i] != -9999.990, i], probs = 0.01, na.rm = TRUE)
+          data[missing_rows[data[missing_rows, i] == -9999.990], i] <- quantile_value
+        }
+      }
+    }
+    else{
+       if(sum(data[, i] == 9999.990) > 0 | sum(data[, i] == -9999.990) > 0){
+      data[data[, i] == 9999.990,i] <- quantile(data[data[,i]!=9999.990,i], probs=0.99, na.rm=TRUE)
+      data[data[, i] == -9999.990,i] <- quantile(data[data[,i]!=-9999.990,i], probs=0.01, na.rm=TRUE)
+       }
+    }
+  }
+  return(data)
+}
+```
+
+```{r}
+train_completed2<-replace.99(train2)
+
+test_completed2<-cbind(replace.99(test1[,1:43]), test1[,44:45])
+test_completed2$부도여부<-NA
+test_completed2$`calender times`<-NA
+
+full_completed1<-rbind(train_completed2[,2:43], test_completed2[,2:43])
+full_completed2<-myimputation(as.data.frame(full_completed1))
+#dim(full_completed2)
+full_completed2 <- full_completed2 %>% mutate(ID = c(train_completed2$ID, test_completed2$ID), 업종 = c(train_completed2$업종, test_completed2$업종), 
+                          규모 = c(train_completed2$규모, test_completed2$규모), 부도여부 = c(train_completed2$부도여부, test_completed2$부도여부), 
+                          `calender times` = c(train_completed2$`calender times`, test_completed2$`calender times`)) 
+
+full_completed2$`부채총계/자산총계비율`[full_completed2$`부채총계/자산총계비율` == 0] <- min(full_completed2$`부채총계/자산총계비율`[full_completed2$`부채총계/자산총계비율` > 0])
+full_completed2$자기자본회전율[full_completed2$자기자본회전율 == 0] <- min(full_completed2$자기자본회전율[full_completed2$자기자본회전율 > 0])
+full_completed2$`부채총계/자산총계비율`[full_completed2$`부채총계/자산총계비율` == 0] <- min(full_completed2$`부채총계/자산총계비율`[full_completed2$`부채총계/자산총계비율` > 0])
+
+train_completed3 <- full_completed2[!is.na(full_completed2$부도여부),]  # 3159 * 47
+test_completed3 <- full_completed2[is.na(full_completed2$부도여부),] 
+```
+
+
+[outlier 제거]{style="background-color: #fff5b1; font-size:120%"}
+
+
+133개 제거
+
+
+```{r}
+cand<-list();out_whole<-c()
+for(i in 2:43){ #ID, factor 제외
+  cand[i-1]<-train_completed3 %>% arrange(.[,i]) %>% dplyr::select(ID) %>% slice(c(1:3,3157:3159))
+  out_whole<-union(out_whole, cand[[i-1]])
+}
+
+train_completed31<-train_completed3[!train_completed3$ID %in% out_whole,] #3026
+train_completed31$부도여부<-as.factor(train_completed31$부도여부-1)
+summary(train_completed31)
+```
+
+[GLM]{style="background-color: #fff5b1; font-size:120%"}
+
+
+ 
+```{r}
+## fitting 61 ##
+glm61<-glm(부도여부 ~ `유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), family = binomial(link = "probit"), data = train_completed31)
+# extractAIC(glm61) 860.3904
+# step(glm61,trace=0)
+pred_prob61<-predict(glm61, train_completed3, type = "response")
+quantile(pred_prob61, 0.1)
+pred_class61<-ifelse(pred_prob61 < 0.00882,1,0)
+table(train_completed3$부도여부, pred_class61) #7개
+
+## fitting 62 ##
+glm62<-glm(부도여부 ~ `유보액/총자산비율` + `고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + log1p(`부채비율`) + `자기자본비율` + `현금비율` + `경영자본순이익율` + `고정자산회전율` + `업종` + `규모`  + log1p(`현금비율`) + log1p(`차입금/자기자본비율`) + log1p(`차입금의존도`), family = binomial(link = "probit"), data = train_completed31)
+# extractAIC(glm62) 856.0933
+# step(glm62,trace=0)
+pred_prob62<-predict(step(glm62, tracce=0), train_completed3, type = "response")
+quantile(pred_prob62, 0.1)
+pred_class62<-ifelse(pred_prob62 < 0.00515,1,0)
+table(train_completed3$부도여부, pred_class62) #4개
+```
+
+
+```{r eval=FALSE}
+boxplot(train_completed31$`자기자본순이익율`/train_completed31$`자기자본회전율`~train_completed31[,46])
+for(i in 2:43){
+  boxplot(train_completed31[,i]~train_completed31[,46], ylab = paste0("x",i))
+}
+for(i in 2:43){
+  boxplot(log1p(train_completed31[,i])~train_completed31[,46], ylab = paste0("x",i))
+}
+for(i in 42:43){
+  boxplot(exp(train_completed31[,i])~train_completed31[,46], ylab = paste0("x",i))
+}
+```
+
+
+
+[GAM]{style="background-color: #fff5b1; font-size:120%"}
+
+
+```{r include=FALSE}
+ggCompare=function(data,y,group){
+    
+    yvar=as.character(substitute(y))
+    groupvar=as.character(substitute(group))
+    
+    if(!is.factor(data[[groupvar]])) data[[groupvar]]=factor(data[[groupvar]])
+    p1=ggplot(data,aes_string(x=yvar,fill=groupvar))+geom_density(alpha=0.5,size=0.3)+theme_article()+theme(legend.position="None")
+    p2=ggplot(data,aes_string(x=groupvar,y=yvar,fill=groupvar))+geom_boxplot(alpha=0.5)+theme_article()+theme(legend.position="None")
+    ggpubr::ggarrange(p1,p2,ncol=2)
+}
+```
+
+
+```{r message=FALSE}
+#변수관계..
+library(gam)
+library(mgcv)
+library(ggGam)
+library(egg)
+library(ztable)
+library(moonBook)
+train_completed32<-train_completed31
+names(train_completed32)<-c(paste0("x",1:45), "delta", "calender")
+train_completed32[train_completed32$x6==0,]$x6<-0.0004738382
+train_completed32$x46<-train_completed32$x27/train_completed32$x37
+train_completed32$x47<-(train_completed32$x2 * train_completed32$x5)/(train_completed32$x37)
+train_completed32$x48<-(1/train_completed32$x6)-1
+
+names(train_completed3)<-c(paste0("x",1:45), "delta", "calender")
+train_completed3[train_completed3$x6==0,]$x6<-0.0004738382
+train_completed3$x46<-train_completed3$x27/train_completed3$x37
+train_completed3$x47<-(train_completed3$x2 * train_completed3$x5)/(train_completed3$x37)
+train_completed3$x48<-(1/train_completed3$x6)-1
+```
+
+```{r}
+ggCompare(train_completed32, y=x4, group=delta)
+ggCompare(train_completed32, y=x5, group=delta)
+ggCompare(train_completed32, y=x9, group=delta)
+ggCompare(train_completed32, y=x10, group=delta)
+ggCompare(train_completed32, y=x14, group=delta)
+ggCompare(train_completed32, y=x20, group=delta)
+ggCompare(train_completed32, y=x23, group=delta)
+ggCompare(train_completed32, y=x24, group=delta)
+ggCompare(train_completed32, y=x27, group=delta)
+ggCompare(train_completed32, y=x28, group=delta)
+ggCompare(train_completed32, y=x29, group=delta)
+ggCompare(train_completed32, y=x31, group=delta)
+ggCompare(train_completed32, y=x38, group=delta)
+ggCompare(train_completed32, y=x39, group=delta)
+ggCompare(train_completed32, y=x41, group=delta)
+ggCompare(train_completed32, y=x42, group=delta)
+
+
+ggCompare(train_completed32, y=x15, group=delta)
+ggCompare(train_completed32, y=x19, group=delta) #얘는 차이가 없어보이긴 함
+
+ggCompare(train_completed32, y=x40, group=delta)
+#ggCompare(train_completed32, y=x46, group=delta)
+#ggCompare(train_completed32, y=x47, group=delta)
+#ggCompare(train_completed32, y=x48, group=delta)
+z=ztable(mytable(delta~x31+x38+x39, data=train_completed32))
+print(z, type="html")
+```
+
+
+
+
+```{r}
+#fitting
+gam1<-mgcv::gam(delta ~ s(x10) + s(x15) + s(x19) + s(x48) + s(x40) + s(x46) + s(x47), family = binomial(link = "probit"), data = train_completed32, method="REML")
+summary(gam1)
+# extractAIC(gam1) 846.90292
+# step(gam1,trace=0)
+pred_prob_A1<-predict(gam1, train_completed3, type = "response")
+quantile(pred_prob_A1, 0.1, na.rm = T)
+pred_class_A1<-ifelse(pred_prob_A1 < 0.00899,1, 0)
+table(train_completed3$delta, pred_class_A1) #1개
+#plot(gam1, pages = 1, seWithMean = TRUE, shift = coef(gam1)[1], shade = T)
+
+
+gam2<-mgcv::gam(delta ~ s(x10) + s(x15) + s(x19) + s(x48) + s(x40) + s(x46) + s(x47) + ti(x10,x15)+ti(x10,x19)+ti(x10,x40) + ti(x15,x40) + ti(x15,x19) + ti(x19,x40), family = binomial(link = "probit"), data = train_completed32, method="REML")
+summary(gam2)
+vis.gam(gam2, view=c("x10","x19"),color="bw",theta=-25, phi=10)
+pred_prob_A2<-predict(gam2, train_completed3, type="response")
+quantile(pred_prob_A2, 0.1, na.rm=T)
+pred_class_A2<-ifelse(pred_prob_A2 < 0.0031,1, 0)
+table(train_completed3$delta, pred_class_A2) #0개
+
+gam3<-mgcv::gam(delta ~ s(x10) + s(x15) + s(x19) + s(x48) + s(x40) + s(x46), family = binomial(link = "probit"), data = train_completed32, method="REML")
+summary(gam3)
+# extractAIC(gam3) 844.95763
+# step(gam1,trace=0)
+#pred_prob_A3<-predict(gam3, train_completed3, type = "response")
+#quantile(pred_prob_A3, 0.1, na.rm = T)
+#pred_class_A1<-ifelse(pred_prob_A1 < 0.00899,1, 0)
+#table(train_completed3$delta, pred_class_A1) #1개
+
+gam4<-gam::gam(delta~x10+x15+x19+x48+x40, family = binomial(link="probit"),data=train_completed32)
+#extractAIC(gam4) #873.4739
+pred_prob_A4<-predict(gam4, train_completed3, type = "response")
+quantile(pred_prob_A4, 0.1)
+pred_class_A4<-ifelse(pred_prob_A4 < 0.0154,1, 0)
+table(train_completed3$delta, pred_class_A4) #1개
+
+gam5<-mgcv::gam(delta ~ s(x4) + s(x5) + s(x9) + s(x10) + s(x14) + s(x20) + s(x23) + s(x24) + s(x27) + s(x28) + s(x29) + s(x31) + s(x38) + s(x39) + s(x41) + s(x42), data=train_completed32, family=binomial(link="probit"), method="REML")
+#extractAIC(gam5) #843.86045
+pred_prob_A5<-predict(gam5, train_completed3, type = "response")
+quantile(pred_prob_A5, 304/3159)
+pred_class_A5<-ifelse(pred_prob_A5 < 0.00277,1, 0)
+table(train_completed3$delta, pred_class_A5) #3개
+
+gam6<-mgcv::gam(delta ~ s(x5) + s(x6) + s(x10) + s(x11) + s(x15) + s(x21) + s(x24) + s(x25) + s(x28) + s(x29) + s(x30) + s(x32) + s(x39) + s(x40) + s(x42) + s(x43), data=train_completed32, family=binomial(link="probit"), method="REML")
+#extractAIC(gam6) #812.0877
+pred_prob_A6<-predict(gam6, train_completed3, type = "response")
+quantile(pred_prob_A6, 304/3159)
+pred_class_A6<-ifelse(pred_prob_A6 < 0.001742,1, 0)
+table(train_completed3$delta, pred_class_A6) #2개
+```
+
