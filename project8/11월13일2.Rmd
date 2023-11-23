@@ -1,0 +1,149 @@
+---
+title: "11월13일2-랜포"
+author: "238STG02 이민주"
+date: "2023-11-13"
+output: html_document
+---
+
+
+```{r warning = FALSE, message = FALSE}
+full4.test <- full4[is.na(full4$부도여부),]
+names(full4.trainz)<-c(paste0("x",2:43), "x1", "x44", "x45", "delta", "calender")
+names(full4.test)<-c(paste0("x",2:43), "x1", "x44", "x45", "delta", "calender")
+
+##랜포
+library(randomForest)
+rfcv_fit<-rfcv(full4.trainz[,c(1:42,44,45,46)], full4.trainz$delta, cv.fold = 10, mtry = function(p) max(8,floor(sqrt(p))))
+rfcv_pred<-rfcv_fit$predicted$`6` #mtry=6
+rfcv_pred
+
+submission<-data.frame()
+rf_model <- randomForest(delta ~ ., data=full4.trainz[,c(1:42,44,45,46)], mtry = floor(sqrt(40)), ntree = 500, importance = T)
+#train predict
+rf_pred_train<-predict(rf_model, full4.trainz)
+rf_pred_test<-predict(rf_model, full4.test)
+ifelse(rf_pred_test>=sort(rf_pred_test, decreasing = T)[304], 1, 0)
+
+
+## XGB
+xgb_model <- xgboost(data=data.matrix(full4.trainz[,-c(43,46,47)]), label=full4.trainz$delta, nrounds = 10)
+xgb_cv<-xgb.cv(data=data.matrix(full4.trainz[,-c(43,46,47)]), nrounds = 10, nthread = 2, nfold=10, prediction = T,label = full4.trainz$delta)
+
+
+xgb_pred <- predict(xgb_model, data.matrix(full4.trainz[,-c(1,46,47)]))
+xgb_df <- data.frame(ID=full4.trainz$x1, y=full4.trainz$delta, pred=xgb_pred) %>% bind_rows(data.frame(ID=c(169,574,747,1257,1327,2643,4698,2876,2892), pred=rep(1,9), y=rep(1,9)))
+xgbCV_df <- data.frame(ID=full4.trainz$x1, y=full4.trainz$delta, pred=xgb_cv$pred) %>% bind_rows(data.frame(ID=c(169,574,747,1257,1327,2643,4698,2876,2892), pred=rep(1,9), y=rep(1,9)))
+
+
+
+
+### df
+rfcv_df <- data.frame(ID=full4.trainz$x1, y=full4.trainz$delta, pred=rfcv_fit$predicted$`6`) %>%
+  bind_rows(data.frame(ID=c(169,574,747,1257,1327,2643,4698,2876,2892), pred=rep(1,9), y=rep(1,9)))
+rf_df <- data.frame(ID=full4.trainz$x1, y=full4.trainz$delta, pred=rf_pred_train) %>%
+  bind_rows(data.frame(ID=c(169,574,747,1257,1327,2643,4698,2876,2892), pred=rep(1,9), y=rep(1,9)))
+
+make.lift <- function(x){
+  x <- x %>% arrange(desc(pred))
+  rownames(x) <- 1:nrow(x)
+  mat <- matrix(0, ncol=3, nrow=10)
+  mat[,1] <- sum(x$y==1)/nrow(x)
+  for (i in 1:10){
+    df <- x[((i-1)*317+1):(i*317),]
+    df <- na.omit(df)
+    mat[i,2] <- sum(df$y==1)/nrow(df)
+    mat[i,3] <- mat[i,2]/mat[i,1]
+  }
+  colnames(mat) <- c('tot_lift', 'row_lift', 'lift')
+  return(mat)
+}
+
+
+rf.lift <- make.lift(rf_df)
+rfcv.lift <- make.lift(rfcv_df)
+xgb.lift <- make.lift(xgb_df)
+xgbCV.lift<-make.lift(xgbCV_df)
+
+plot(xgb.lift[,3], type = 'l',col="orange", main="lift curve - Cross Validation", ylab="", ylim=c(0,10), lwd=2)
+#lines(rfcv.lift[,3], type='l', col="royalblue4",lwd=2, lty = 2)
+#lines(xgb.lift[,3], type='l', col="orange",lwd=2)
+lines(xgbCV.lift[,3], type = 'l', col="brown3", lwd=2, lty=2)
+legend('topright', legend = c("XGB", "XGB_CV"), 
+       col = c("orange", "brown3"), lty=c(1,2,1,2), lwd=2, inset = c(0.02, 0.04))
+```
+
+
+```{r}
+varImpPlot(rf_model,main = "rf : feature_importance")
+rf_pred <- predict(rf_model, train, type = "prob")[,2]
+table(rf_pred>0.5, train$delta)
+```
+
+
+###KNN, NN
+
+```{r}
+set.seed(1886)
+
+# train -> min-max scaling
+train_min <- apply(full4.trainz[,1:42], 2, min)
+train_max <- apply(full4.trainz[,1:42], 2, max)
+train_mm <- full4.trainz
+for(i in 1:42){
+  train_mm[,i] <- (train_mm[,i]-train_min[i])/(train_max[i]-train_min[i])
+}
+
+# encoding
+train_mm$x1 <- full4.trainz$x1
+x44_level <- as.character(1:5); names(x44_level) <- levels(train_mm$x44)
+train_mm["x44"] <- as.factor(sapply(train_mm$x44, function(x) x44_level[[x]]))
+x45_level <- as.character(1:5); names(x45_level) <- levels(train_mm$x45)
+train_mm["x45"] <- as.factor(sapply(train_mm$x45, function(x) x45_level[[x]]))
+train_mm$delta <- ifelse(train_mm$delta==1, "yes", "no")
+train_mm$calender <- full4.trainz$calender
+
+# test -> min-max scaling
+test_mm <- full4.test
+for(i in 1:42){
+  test_mm[,i] <- (test_mm[,i]-train_min[i])/(train_max[i]-train_min[i])
+}
+
+# encoding
+test_mm["x44"] <- sapply(test_mm$x44, function(x) x44_level[[x]])
+test_mm["x45"] <- sapply(test_mm$x45, function(x) x45_level[[x]])
+
+
+# test 
+library(class)
+for(i in 151:200){
+  aaa <- knn(train=train_mm[,-c(43,46,47)], cl=train_mm$delta, test=test_mm[,-c(43,46,47)], k=i, prob=TRUE)
+  print(sort(1-attr(aaa,"prob"), decreasing = T)[303:306])
+}
+
+aaa <- knn(train=train_mm[,-c(43,46,47)], cl=train_mm$delta, test=test_mm[,-c(43,46,47)], k=169, prob=TRUE)
+print(sort(1-attr(aaa,"prob"), decreasing = T)[303:306])
+
+knn_test <- 1-attr(aaa,"prob")
+submission["knn"] <- ifelse(knn_test>=sort(knn_test, decreasing = T)[304], 1, 0)
+
+knnn<-ifelse(knn_test>=sort(knn_test, decreasing = T)[304], 1, 0)
+write.csv(knnn, "knnn.csv")
+```
+
+
+
+```{r}
+library(nnet)
+set.seed(1234)
+#bbb<-full4.trainz
+bbb<-data.frame(scale(full4.trainz[,-c(43,44,45,46,47)]),full4.trainz[,44:46])
+train_mm$delta<-as.factor(train_mm$delta)
+nn_model<-nnet(delta~., data=train_mm[,-c(43,47)], size = 5, decay=0.7)
+sort(predict(nn_model, newdata=test_mm, type="raw")[,1],decreasing = T)[303:305]
+
+nn_test<-predict(nn_model, newdata=test_mm, type="raw")[,1]
+nnnnn<-ifelse(nn_test>=sort(nn_test, decreasing = T)[304], 1, 0)
+write.csv(nnnnn, "nnnnn.csv")
+```
+
+
