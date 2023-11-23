@@ -1,0 +1,992 @@
+---
+title: "이론통계학2 Project#8"
+author: "232STG13 서민지"
+output: 
+  html_document: 
+    df_print: kable
+    theme: paper
+    toc: yes
+    toc_float: yes
+---
+
+```{r include=FALSE}
+setwd("C:/Users/서민지/Desktop/통계 대학원/2023-2/이론통계학2/Project 8")
+library(readxl); library(tidyverse); library(GGally); library(ggplot2); library(gridExtra); library(lubridate); library(bestglm); library(ROCR); library(MASS); library(caret); library(e1071); library(kknn); library(class);library(survival); library(survminer); library(mltools); library(data.table); library(reshape);
+library(kableExtra); library(devtools); library(nnet); library(NeuralNetTools); library(xgboost); library(randomForest)
+library(gghalfnorm); library(gridExtra); library(ggcorrplot); library(colorspace); library(gridExtra); library(mgcv); library(xgboost)
+
+options(scipen=500)
+
+myimputation<-function(x,k=10){
+
+# this function imputes x-matrix using k-nn imputataion
+
+# x : x-matrix, k: nearest k neighborhood 
+
+# central. value functions fills the missing data
+
+# if numeric -> median
+
+# if categorical -> most frequen value
+
+
+   central.value <- function(x) {
+
+      if (is.numeric(x)) median(x,na.rm=T)
+
+      else if (is.factor(x)) levels(x)[which.max(table(x))] #mode value
+
+      else { #Compute mode value after change character varible to factor
+
+         f <- as.factor(x)
+
+         levels(f)[which.max(table(f))]
+
+      }
+
+   }
+
+   library(cluster)
+
+#dist.mtx has all pairwise distances in x-matrix
+
+#it uses daisy function in cluster package
+
+   dist.mtx<-as.matrix(daisy(x,stand=T))
+
+   for(r in which(!complete.cases(x))) x[r,which(is.na(x[r,]))] <- apply(data.frame(x[c(as.integer(names(sort(dist.mtx[r,])[2:(k+1)]))), which(is.na(x[r,]))]), 2,central.value)
+
+
+   return(x)
+
+}
+
+#최종본
+myNAindex<-function(mydf, type){
+  temp1<-temp2<-data.frame(index=1:nrow(mydf), isNA=rep(0,nrow(mydf)))
+  # 나이만 NA
+  if(type==1){
+    temp1$isNA<-is.na(mydf$`나이`)
+    temp2$isNA<-rowSums(is.na(mydf[,22:41]))==20
+    res<-setdiff(temp1$index[temp1$isNA==1], temp2$index[temp2$isNA==1])
+  }
+  # 총자산투자효율~총자본회전율만 NA
+  else if(type==2){
+    temp1$isNA<-rowSums(is.na(mydf[,22:40]))==19
+    temp2$isNA<-rowSums(is.na(mydf[,22:41]))==20
+    res<-setdiff(temp1$index[temp1$isNA==1], temp2$index[temp2$isNA==1])
+  }
+  # 나이 + 총자산투자효율~총자본회전율 다 NA
+  else if(type==3){
+    temp1$isNA<-rowSums(is.na(mydf[,22:41]))==20
+    res<-temp1$index[temp1$isNA==1]
+  }
+  # 경영자본회전율~총자본회전율 + 로그매출액 NA
+  else if(type==4){
+    temp1$isNA<-rowSums(is.na(mydf[,c(33:40,42)]))==9
+    res<-temp1$index[temp1$isNA==1]
+  }
+  # 자본금순이익율 + 자본금회전율만 NA
+  else if(type==5){
+    temp1$isNA<-rowSums(is.na(mydf[,c(28,38)]))==2
+    temp2$isNA<-rowSums(is.na(mydf[,22:40]))==19
+    res<-setdiff(temp1$index[temp1$isNA==1], temp2$index[temp2$isNA==1])
+    }
+  # 고정부채비율 NA
+  else if(type==6){
+    temp1$isNA<-is.na(mydf$`고정부채비율`)
+    res<-temp1$index[temp1$isNA==1]
+  }
+  
+  
+  return(res)
+}
+
+```
+
+```{r}
+df <- read_excel("2023-HW#8-과제용 (1).xls", sheet=1)
+train <- df[complete.cases(df$부도여부),] #3168 * 47
+test <- df[!complete.cases(df$부도여부),] #3168 * 47
+names(df)
+```
+
+```{r}
+#train
+sapply(train[,1:45], function(x)(sum(is.na(x))))
+#총자산투자효율: 9, 매출채권증가율: 9, 재고자산증가율: 9, 경영자본순이익율: 9, 금융비용/총부채비율: 9, 자기자본순이익율: 9, 자본금순이익율: 12, 총자본경상이익율: 9, 총자본순이익율: 9, 총자본영업이익율: 9, 총자산사업이익율: 9, 경영자본회전율: 11, 고정자산회전율: 11, 매입채무회전율: 11, 매출채권회전율: 11, 자기자본회전율: 11, 자본금회전율: 14, 재고자산회전율: 11, 총자본회전율: 11, 나이: 12, 로그매출액: 2
+
+unique(train$규모) #비외감1, 비외감2, 개인, 외감, 소호
+unique(train$업종) #경공업, 중공업, 도소매, 건설업, 서비스
+
+#비교는 대부분 산업군과 규모를 고려하니 이를 기준으로 나누어 imputation 진행하는 건 어떨까
+
+
+sapply(train[,1:45], function(x)(sum(x == 9999.990, na.rm = TRUE)))
+#고정부채비율: 215, 고정비율: 215, 고정재무비보상배율: 5, 총CF/차입금비율: 12, CF/차입금비율: 58, 자기자본순이익율: 207, 자본금순이익율: 3, 자기자본회전율: 205
+
+sapply(train[,1:45], function(x)(sum(x == 9999.990, na.rm = TRUE)))
+#고정부채비율: 1, 고정비율: 1, 부채비율: 217, 유동부채비율: 217, 유동비율: 32, 고정자산/차입금비율: 283, 차입금/자기자본비율: 217, 고정재무비보상배율: 105, 총차입금/(총차입금+자기자본)비율: 20, 총CF/차입금비율: 273, CF/차입금비율: 182, 현금비율: 30, 자본금순이익율: 6, 고정자산회전율: 5, 매입채무회전율: 738, 매출채권회전율: 562, 자기자본회전율: 1, 자본금회전율: 9, 재고자산회전율: 540
+```
+
+```{r}
+#train에서 총자산투자효율:총자본회전율까지 NA인 행 제거(9개). 무조건 부도여부 = 1
+train1 <- train[!rowSums(is.na(train[, 22:40])) == (40 - 22 + 1), ]
+train1 <-  train1 %>% mutate(매출액 = exp(로그매출액))
+train1[is.na(train1$매출액), c(33:40,42,48)] <- 0 #ID %in% c(974,1126) 모두 바뀜
+#기존 매출액이 0일 때 log를 취하면서 NA가 되었을 것으로 예상하여 매출액 변수를 새로 만들어 0을 채워넣어줌
+train1 <- train1 %>% mutate(new로그매출액 = log1p(매출액)) #3159 * 49
+
+# train1[train1$new로그매출액 == 0, ] <- lapply(train1[train1$new로그매출액 == 0, ], function(x) ifelse(is.na(x), 0, x))
+
+
+#매출채권 구하기
+# train1 <- train1 %>% na.omit() %>% mutate(전기말매출채권 = (매출액 * 2 / 매출채권회전율) / (1+(1/(1+매출채권증가율/100))), 당기말매출채권 = 전기말매출채권 / (1+매출채권증가율/100))
+
+#재고자산 구하기
+# train1 <- train1 %>% na.omit() %>% mutate(전기말재고자산 = (매출액 * 2 / 재고자산회전율) / (1+(1/(1+재고자산증가율/100))), 당기말재고자산 = 전기말재고자산 / (1+매출채권증가율/100))
+
+#myimputation으로 KNN 진행
+# data.frame(sapply(train1[,1:41], function(x)(ifelse(x %in% c(9999.990, -9999.990),NA,x)))) %>% mutate(로그매출액 = train1$로그매출액, 로그자산 = train1$로그자산, 매출액 = train1$매출액, 업종 = train1$업종, 규모 = train1$규모, 부도여부 = train1$부도여부, `calender times` = train1$`calender times`) -> train2
+# myimputation(train2[,1:41], k=30) -> train3
+
+train2 <- train1 %>% mutate(업종 = as.factor(업종),규모 = as.factor(규모))
+
+test2 <- test[-c(myNAindex(test, type=2), myNAindex(test, type=3)),] #13개의 NA 제거. 무조건 부도여부 = 1로 넣을 것. 3155 * 47
+
+
+replace.99 <- function(data) {
+  for (i in 2:ncol(data)) {
+    
+    missing_rows <- which(is.na(data[, i]))
+    
+    if (length(missing_rows) > 0) {
+
+      if (sum(!is.na(data[missing_rows, i]) & data[missing_rows, i] == 9999.990) > 0 | 
+         sum(!is.na(data[missing_rows, i]) & data[missing_rows, i] == -9999.990) > 0) {
+
+        if (sum(!is.na(data[missing_rows, i]) & data[missing_rows, i] == 9999.990) > 0) {
+          quantile_value <- quantile(data[data[, i] != 9999.990, i], probs = 0.99, na.rm = TRUE)
+          data[missing_rows[data[missing_rows, i] == 9999.990], i] <- quantile_value
+        }
+
+        if (sum(!is.na(data[missing_rows, i]) & data[missing_rows, i] == -9999.990) > 0) {
+          quantile_value <- quantile(data[data[, i] != -9999.990, i], probs = 0.01, na.rm = TRUE)
+          data[missing_rows[data[missing_rows, i] == -9999.990], i] <- quantile_value
+        }
+      }
+    }
+    else{
+       if(sum(data[, i] == 9999.990) > 0 | sum(data[, i] == -9999.990) > 0){
+      data[data[, i] == 9999.990,i] <- quantile(data[data[,i]!=9999.990,i], probs=0.99, na.rm=TRUE)
+      data[data[, i] == -9999.990,i] <- quantile(data[data[,i]!=-9999.990,i], probs=0.01, na.rm=TRUE)
+       }
+    }
+    }
+  return(data)
+}
+
+train22 <- replace.99(train2)
+test22 <- cbind(replace.99(test2[,1:43]), test2[,44:47])
+test22$업종 <- as.factor(test22$업종); test22$규모 <- as.factor(test22$규모)
+
+full22 <- rbind(train22[,2:43], test22[,2:43]) #업종, 규모, 부도여부, calender times 제외하고 imputation. 6314(=3159+3155) * 42
+
+myimputation(as.data.frame(full22)) -> full3
+full3 %>% mutate(ID = c(train22$ID, test22$ID), 업종 = c(train22$업종, test22$업종), 규모 = c(train22$규모, test22$규모), 부도여부 = c(train22$부도여부, test22$부도여부), `calender times` = c(train22$`calender times`, test22$`calender times`)) -> full4 #imputation 후 ID, 업종, 규모, 부도여부, calender times 붙이기. 6314 * 47
+```
+
+```{r}
+full4$자기자본회전율[full4$자기자본회전율 == 0] <- min(full4$자기자본회전율[full4$자기자본회전율 > 0]) #0.00002067042
+
+full4$`부채총계/자산총계비율`[full4$`부채총계/자산총계비율` == 0] <- min(full4$`부채총계/자산총계비율`[full4$`부채총계/자산총계비율` > 0]) #0.0004738382
+
+str(full4)
+
+#train data에서 앞뒤로 0.01%씩 outlier 자르기
+
+full4.train <- full4[!is.na(full4$부도여부),] #3159 * 47
+
+train_out_whole <- c()
+for (i in 1:42){
+  out_list <- full4.train[order(full4.train[,i]),] %>% filter() %>% dplyr::select(ID)
+  out_list <- out_list[c(1:3, 3157:3159),]
+  train_out_whole <- union(train_out_whole, out_list)
+}
+
+length(train_out_whole) #129
+
+full4.trainz <- full4.train[!full4.train$ID %in% train_out_whole,] #3030 * 47
+
+
+
+#test data
+full4.test <- full4[is.na(full4$부도여부),] #3155 * 47
+
+```
+
+
+```{r message=FALSE, warning=FALSE}
+full4.trainz$부도여부 <- as.factor(full4.trainz$부도여부)
+
+#no interaction
+glm_probit <- glm(부도여부 ~ `유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), family = binomial(link = "probit"), data = full4.trainz)
+
+glm_logit <- glm(부도여부 ~ `유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), family = binomial(link = "logit"), data = full4.trainz)
+
+glm_gompit <- glm(부도여부 ~ `유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), family = binomial(link = "cloglog"), data = full4.trainz)
+
+glm_probit_step <- step(glm_probit, trace=0)
+glm_logit_step <- step(glm_logit, trace=0)
+glm_gompit_step <- step(glm_gompit, trace=0)
+
+#with interaction
+glm_probit2 <- glm(부도여부 ~ `유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `유보액/총자산비율`:`고정재무비보상배율` + `유보액/총자산비율`:`순운전자본/총자산비율` + `유보액/총자산비율`:I((1/`부채총계/자산총계비율`)-1) +  `유보액/총자산비율`:`총자본회전율` + `유보액/총자산비율`:I(`자기자본순이익율`/`자기자본회전율`) + `유보액/총자산비율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `고정재무비보상배율`:`순운전자본/총자산비율` + `고정재무비보상배율`:I((1/`부채총계/자산총계비율`)-1) + `고정재무비보상배율`:`총자본회전율` +  `고정재무비보상배율`:I(`자기자본순이익율`/`자기자본회전율`) + `고정재무비보상배율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `순운전자본/총자산비율`:I((1/`부채총계/자산총계비율`)-1) + `순운전자본/총자산비율`:`총자본회전율` + `순운전자본/총자산비율`:I(`자기자본순이익율`/`자기자본회전율`) + `순운전자본/총자산비율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율)+ I((1/`부채총계/자산총계비율`)-1):`총자본회전율` + I((1/`부채총계/자산총계비율`)-1):I(`자기자본순이익율`/`자기자본회전율`) + I((1/`부채총계/자산총계비율`)-1):I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `총자본회전율`:I(`자기자본순이익율`/`자기자본회전율`) + `총자본회전율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + I(`자기자본순이익율`/`자기자본회전율`):I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), family = binomial(link = "probit"), data = full4.trainz)
+
+prob_both <- step(glm_probit, scope = formula(glm_probit2), trace=F)
+
+glm_logit2 <- glm(부도여부 ~ `유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `유보액/총자산비율`:`고정재무비보상배율` + `유보액/총자산비율`:`순운전자본/총자산비율` + `유보액/총자산비율`:I((1/`부채총계/자산총계비율`)-1) +  `유보액/총자산비율`:`총자본회전율` + `유보액/총자산비율`:I(`자기자본순이익율`/`자기자본회전율`) + `유보액/총자산비율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `고정재무비보상배율`:`순운전자본/총자산비율` + `고정재무비보상배율`:I((1/`부채총계/자산총계비율`)-1) + `고정재무비보상배율`:`총자본회전율` +  `고정재무비보상배율`:I(`자기자본순이익율`/`자기자본회전율`) + `고정재무비보상배율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `순운전자본/총자산비율`:I((1/`부채총계/자산총계비율`)-1) + `순운전자본/총자산비율`:`총자본회전율` + `순운전자본/총자산비율`:I(`자기자본순이익율`/`자기자본회전율`) + `순운전자본/총자산비율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율)+ I((1/`부채총계/자산총계비율`)-1):`총자본회전율` + I((1/`부채총계/자산총계비율`)-1):I(`자기자본순이익율`/`자기자본회전율`) + I((1/`부채총계/자산총계비율`)-1):I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `총자본회전율`:I(`자기자본순이익율`/`자기자본회전율`) + `총자본회전율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + I(`자기자본순이익율`/`자기자본회전율`):I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), family = binomial(link = "logit"), data = full4.trainz)
+
+log_both <- step(glm_logit, scope = formula(glm_logit2), trace=F)
+
+glm_gompit2 <- glm(부도여부 ~ `유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `유보액/총자산비율`:`고정재무비보상배율` + `유보액/총자산비율`:`순운전자본/총자산비율` + `유보액/총자산비율`:I((1/`부채총계/자산총계비율`)-1) +  `유보액/총자산비율`:`총자본회전율` + `유보액/총자산비율`:I(`자기자본순이익율`/`자기자본회전율`) + `유보액/총자산비율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `고정재무비보상배율`:`순운전자본/총자산비율` + `고정재무비보상배율`:I((1/`부채총계/자산총계비율`)-1) + `고정재무비보상배율`:`총자본회전율` +  `고정재무비보상배율`:I(`자기자본순이익율`/`자기자본회전율`) + `고정재무비보상배율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `순운전자본/총자산비율`:I((1/`부채총계/자산총계비율`)-1) + `순운전자본/총자산비율`:`총자본회전율` + `순운전자본/총자산비율`:I(`자기자본순이익율`/`자기자본회전율`) + `순운전자본/총자산비율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율)+ I((1/`부채총계/자산총계비율`)-1):`총자본회전율` + I((1/`부채총계/자산총계비율`)-1):I(`자기자본순이익율`/`자기자본회전율`) + I((1/`부채총계/자산총계비율`)-1):I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `총자본회전율`:I(`자기자본순이익율`/`자기자본회전율`) + `총자본회전율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + I(`자기자본순이익율`/`자기자본회전율`):I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), family = binomial(link = "cloglog"), data = full4.trainz)
+
+gomp_both <- step(glm_gompit, scope = formula(glm_gompit2), trace=F)
+
+
+rbind(c(extractAIC(glm_probit), extractAIC(glm_probit_step), extractAIC(glm_probit2), extractAIC(prob_both)),c(extractAIC(glm_logit), extractAIC(glm_logit_step), extractAIC(glm_logit2), extractAIC(log_both)), c(extractAIC(glm_gompit), extractAIC(glm_gompit_step), extractAIC(glm_gompit2), extractAIC(gomp_both)))
+
+
+
+
+pred_prob_0220<-predict(glm_probit_step, full4.train, type = "response")
+quantile(pred_prob_0220, 0.1)
+pred_class_0220<-ifelse(pred_prob_0220 < quantile(pred_prob_0220, 0.1),1,0)
+table(full4.train$부도여부, pred_class_0220)
+```
+
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+#업종별로 나눠서 9999.990, -9999.990 대체하고 imputation 하기
+#1. 건설업(construction industry)
+
+train.ci <- replace.99(train2[train2$업종=="건설업",])
+test22 <- cbind(replace.99(test2[,1:43]), test2[,44:47])
+test22$업종 <- as.factor(test22$업종); test22$규모 <- as.factor(test22$규모)
+
+full.ci <- rbind(train.ci[,2:43], test22[test22$업종=="건설업",2:43]) #업종, 규모, 부도여부, calender times 제외하고 imputation. 1402 * 42
+
+myimputation(as.data.frame(full.ci)) -> full.ci2
+full.ci2 %>% mutate(ID = c(train.ci$ID, test22[test22$업종=="건설업","ID"]), 업종 = c(train.ci$업종,test22[test22$업종=="건설업","업종"]), 규모 = c(train.ci$규모, test22[test22$업종=="건설업","규모"]), 부도여부 = c(train.ci$부도여부, test22[test22$업종=="건설업","부도여부"]), `calender times` = c(train.ci$`calender times`, test22[test22$업종=="건설업","calender times"])) -> full.ci3 #imputation 후 ID, 업종, 규모, 부도여부, calender times 붙이기. 1402 * 47
+
+#2. 경공업(light industry)
+
+train.li <- replace.99(train2[train2$업종=="경공업",])
+
+full.li <- rbind(train.li[,2:43], test22[test22$업종=="경공업",2:43]) #업종, 규모, 부도여부, calender times 제외하고 imputation. 1323 * 42
+
+myimputation(as.data.frame(full.li)) -> full.li2
+full.li2 %>% mutate(ID = c(train.li$ID, test22[test22$업종=="경공업","ID"]), 업종 = c(train.li$업종,test22[test22$업종=="경공업","업종"]), 규모 = c(train.li$규모, test22[test22$업종=="경공업","규모"]), 부도여부 = c(train.li$부도여부, test22[test22$업종=="경공업","부도여부"]), `calender times` = c(train.li$`calender times`, test22[test22$업종=="경공업","calender times"])) -> full.li3 #imputation 후 ID, 업종, 규모, 부도여부, calender times 붙이기. 1323 * 47
+
+#3. 도소매(wholesale/retail)
+
+train.wr <- replace.99(train2[train2$업종=="도소매",])
+
+full.wr <- rbind(train.wr[,2:43], test22[test22$업종=="도소매",2:43]) #업종, 규모, 부도여부, calender times 제외하고 imputation. 957 * 42
+
+myimputation(as.data.frame(full.wr)) -> full.wr2
+full.wr2 %>% mutate(ID = c(train.wr$ID, test22[test22$업종=="도소매","ID"]), 업종 = c(train.wr$업종,test22[test22$업종=="도소매","업종"]), 규모 = c(train.wr$규모, test22[test22$업종=="도소매","규모"]), 부도여부 = c(train.wr$부도여부, test22[test22$업종=="도소매","부도여부"]), `calender times` = c(train.wr$`calender times`, test22[test22$업종=="도소매","calender times"])) -> full.wr3 #imputation 후 ID, 업종, 규모, 부도여부, calender times 붙이기. 957 * 47
+
+#4. 서비스 (service)
+train.srv <- replace.99(train2[train2$업종=="서비스",])
+
+full.srv <- rbind(train.srv[,2:43], test22[test22$업종=="서비스",2:43]) #업종, 규모, 부도여부, calender times 제외하고 imputation. 1091 * 42
+
+myimputation(as.data.frame(full.srv)) -> full.srv2
+full.srv2 %>% mutate(ID = c(train.srv$ID, test22[test22$업종=="서비스","ID"]), 업종 = c(train.srv$업종,test22[test22$업종=="서비스","업종"]), 규모 = c(train.srv$규모, test22[test22$업종=="서비스","규모"]), 부도여부 = c(train.srv$부도여부, test22[test22$업종=="서비스","부도여부"]), `calender times` = c(train.srv$`calender times`, test22[test22$업종=="서비스","calender times"])) -> full.srv3 #imputation 후 ID, 업종, 규모, 부도여부, calender times 붙이기. 1091 * 47
+
+#5. 중공업 (heavy industry)
+train.hi <- replace.99(train2[train2$업종=="중공업",])
+
+full.hi <- rbind(train.hi[,2:43], test22[test22$업종=="중공업",2:43]) #업종, 규모, 부도여부, calender times 제외하고 imputation. 1541 * 42
+
+myimputation(as.data.frame(full.hi)) -> full.hi2
+full.hi2 %>% mutate(ID = c(train.hi$ID, test22[test22$업종=="중공업","ID"]), 업종 = c(train.hi$업종,test22[test22$업종=="중공업","업종"]), 규모 = c(train.hi$규모, test22[test22$업종=="중공업","규모"]), 부도여부 = c(train.hi$부도여부, test22[test22$업종=="중공업","부도여부"]), `calender times` = c(train.hi$`calender times`, test22[test22$업종=="중공업","calender times"])) -> full.hi3 #imputation 후 ID, 업종, 규모, 부도여부, calender times 붙이기. 1541 * 47
+
+full.type <- rbind(full.ci3, full.li3, full.wr3, full.srv3, full.hi3) %>% arrange(ID) #6314 * 47
+
+
+full.type$자기자본회전율[full.type$자기자본회전율 == 0] <- min(full.type$자기자본회전율[full.type$자기자본회전율 > 0]) #0.00002067042
+
+full.type$`부채총계/자산총계비율`[full.type$`부채총계/자산총계비율` == 0] <- min(full.type$`부채총계/자산총계비율`[full.type$`부채총계/자산총계비율` > 0]) #0.0004738382
+
+str(full.type)
+
+#train data에서 앞뒤로 0.01%씩 outlier 자르기
+
+full.type.train <- full.type[!is.na(full.type$부도여부),] #3159 * 47
+
+train_out_whole <- c()
+for (i in 1:42){
+  out_list <- full.type.train[order(full.type.train[,i]),] %>% filter() %>% dplyr::select(ID)
+  out_list <- out_list[c(1:3, 3157:3159),]
+  train_out_whole <- union(train_out_whole, out_list)
+}
+
+length(train_out_whole) #129
+
+full.type.trainz <- full.type.train[!full.type.train$ID %in% train_out_whole,] #3030 * 47
+
+
+#no interaction
+glm_probit <- glm(부도여부 ~ `유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), family = binomial(link = "probit"), data = full.type.trainz)
+
+glm_logit <- glm(부도여부 ~ `유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), family = binomial(link = "logit"), data = full.type.trainz)
+
+glm_gompit <- glm(부도여부 ~ `유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), family = binomial(link = "cloglog"), data = full.type.trainz)
+
+glm_probit_step <- step(glm_probit, trace=0)
+glm_logit_step <- step(glm_logit, trace=0)
+glm_gompit_step <- step(glm_gompit, trace=0)
+
+#with interaction
+glm_probit2 <- glm(부도여부 ~ `유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `유보액/총자산비율`:`고정재무비보상배율` + `유보액/총자산비율`:`순운전자본/총자산비율` + `유보액/총자산비율`:I((1/`부채총계/자산총계비율`)-1) +  `유보액/총자산비율`:`총자본회전율` + `유보액/총자산비율`:I(`자기자본순이익율`/`자기자본회전율`) + `유보액/총자산비율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `고정재무비보상배율`:`순운전자본/총자산비율` + `고정재무비보상배율`:I((1/`부채총계/자산총계비율`)-1) + `고정재무비보상배율`:`총자본회전율` +  `고정재무비보상배율`:I(`자기자본순이익율`/`자기자본회전율`) + `고정재무비보상배율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `순운전자본/총자산비율`:I((1/`부채총계/자산총계비율`)-1) + `순운전자본/총자산비율`:`총자본회전율` + `순운전자본/총자산비율`:I(`자기자본순이익율`/`자기자본회전율`) + `순운전자본/총자산비율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율)+ I((1/`부채총계/자산총계비율`)-1):`총자본회전율` + I((1/`부채총계/자산총계비율`)-1):I(`자기자본순이익율`/`자기자본회전율`) + I((1/`부채총계/자산총계비율`)-1):I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `총자본회전율`:I(`자기자본순이익율`/`자기자본회전율`) + `총자본회전율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + I(`자기자본순이익율`/`자기자본회전율`):I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), family = binomial(link = "probit"), data = full.type.trainz)
+
+prob_both <- step(glm_probit, scope = formula(glm_probit2), trace=F)
+
+glm_logit2 <- glm(부도여부 ~ `유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `유보액/총자산비율`:`고정재무비보상배율` + `유보액/총자산비율`:`순운전자본/총자산비율` + `유보액/총자산비율`:I((1/`부채총계/자산총계비율`)-1) +  `유보액/총자산비율`:`총자본회전율` + `유보액/총자산비율`:I(`자기자본순이익율`/`자기자본회전율`) + `유보액/총자산비율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `고정재무비보상배율`:`순운전자본/총자산비율` + `고정재무비보상배율`:I((1/`부채총계/자산총계비율`)-1) + `고정재무비보상배율`:`총자본회전율` +  `고정재무비보상배율`:I(`자기자본순이익율`/`자기자본회전율`) + `고정재무비보상배율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `순운전자본/총자산비율`:I((1/`부채총계/자산총계비율`)-1) + `순운전자본/총자산비율`:`총자본회전율` + `순운전자본/총자산비율`:I(`자기자본순이익율`/`자기자본회전율`) + `순운전자본/총자산비율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율)+ I((1/`부채총계/자산총계비율`)-1):`총자본회전율` + I((1/`부채총계/자산총계비율`)-1):I(`자기자본순이익율`/`자기자본회전율`) + I((1/`부채총계/자산총계비율`)-1):I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `총자본회전율`:I(`자기자본순이익율`/`자기자본회전율`) + `총자본회전율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + I(`자기자본순이익율`/`자기자본회전율`):I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), family = binomial(link = "logit"), data = full.type.trainz)
+
+log_both <- step(glm_logit, scope = formula(glm_logit2), trace=F)
+
+glm_gompit2 <- glm(부도여부 ~ `유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `유보액/총자산비율`:`고정재무비보상배율` + `유보액/총자산비율`:`순운전자본/총자산비율` + `유보액/총자산비율`:I((1/`부채총계/자산총계비율`)-1) +  `유보액/총자산비율`:`총자본회전율` + `유보액/총자산비율`:I(`자기자본순이익율`/`자기자본회전율`) + `유보액/총자산비율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `고정재무비보상배율`:`순운전자본/총자산비율` + `고정재무비보상배율`:I((1/`부채총계/자산총계비율`)-1) + `고정재무비보상배율`:`총자본회전율` +  `고정재무비보상배율`:I(`자기자본순이익율`/`자기자본회전율`) + `고정재무비보상배율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `순운전자본/총자산비율`:I((1/`부채총계/자산총계비율`)-1) + `순운전자본/총자산비율`:`총자본회전율` + `순운전자본/총자산비율`:I(`자기자본순이익율`/`자기자본회전율`) + `순운전자본/총자산비율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율)+ I((1/`부채총계/자산총계비율`)-1):`총자본회전율` + I((1/`부채총계/자산총계비율`)-1):I(`자기자본순이익율`/`자기자본회전율`) + I((1/`부채총계/자산총계비율`)-1):I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `총자본회전율`:I(`자기자본순이익율`/`자기자본회전율`) + `총자본회전율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + I(`자기자본순이익율`/`자기자본회전율`):I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), family = binomial(link = "cloglog"), data = full.type.trainz)
+
+gomp_both <- step(glm_gompit, scope = formula(glm_gompit2), trace=F)
+
+
+rbind(c(extractAIC(glm_probit), extractAIC(glm_probit_step), extractAIC(glm_probit2), extractAIC(prob_both)),c(extractAIC(glm_logit), extractAIC(glm_logit_step), extractAIC(glm_logit2), extractAIC(log_both)), c(extractAIC(glm_gompit), extractAIC(glm_gompit_step), extractAIC(glm_gompit2), extractAIC(gomp_both)))
+
+
+
+
+pred_prob_0220<-predict(glm_probit_step, full.type.train, type = "response")
+quantile(pred_prob_0220, 0.1)
+pred_class_0220<-ifelse(pred_prob_0220 < quantile(pred_prob_0220, 0.1),1,0)
+table(full.type.train$부도여부, pred_class_0220)
+```
+
+```{r eval=FALSE, fig.height=40, fig.width=10, message=FALSE, warning=FALSE, include=FALSE}
+halfnorm.plot <- list()
+for (i in 1:42){
+  halfnorm.plot[[i]] <- gghalfnorm(full4.train[[i]], nlab=6)
+}
+grid.arrange(grobs=halfnorm.plot, ncol=3)
+
+outlier.list1 <- list()
+for (i in 1:42){
+  outlier.list1[[i]] <- halfnorm.plot[[i]][["plot_env"]][["labs"]]
+  names(outlier.list1)[i] <- names(full4.train[i])
+}
+
+outlier.list1 #1~42까지의 각 변수에서 뽑은 outlier들 list
+
+union.list <- c()
+for (i in 1:42){
+  union.list <- union(union.list, outlier.list1[[i]])
+}
+union.list <- as.numeric(union.list) %>% sort()
+
+full4.train[-union.list,] -> halfnorm.train; dim(halfnorm.train) #3020 * 47
+
+halfnorm.train$자기자본회전율[halfnorm.train$자기자본회전율 == 0] <- min(halfnorm.train$자기자본회전율[halfnorm.train$자기자본회전율 > 0]) #0.0001883239
+
+halfnorm.train$`부채총계/자산총계비율`[halfnorm.train$`부채총계/자산총계비율` == 0] <- min(halfnorm.train$`부채총계/자산총계비율`[halfnorm.train$`부채총계/자산총계비율` > 0]) #0.0004738382
+
+glm_probith <- glm(부도여부 ~ `유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), family = binomial(link = "probit"), data = halfnorm.train)
+
+glm_logith <- glm(부도여부 ~ `유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), family = binomial(link = "logit"), data = halfnorm.train)
+
+glm_gompith <- glm(부도여부 ~ `유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), family = binomial(link = "cloglog"), data = halfnorm.train)
+
+glm_probit_steph <- step(glm_probith, trace=0)
+glm_logit_steph <- step(glm_logith, trace=0)
+glm_gompit_steph <- step(glm_gompith, trace=0)
+
+
+#with interaction
+glm_probit2h <- glm(부도여부 ~ `유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `유보액/총자산비율`:`고정재무비보상배율` + `유보액/총자산비율`:`순운전자본/총자산비율` + `유보액/총자산비율`:I((1/`부채총계/자산총계비율`)-1) +  `유보액/총자산비율`:`총자본회전율` + `유보액/총자산비율`:I(`자기자본순이익율`/`자기자본회전율`) + `유보액/총자산비율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `고정재무비보상배율`:`순운전자본/총자산비율` + `고정재무비보상배율`:I((1/`부채총계/자산총계비율`)-1) + `고정재무비보상배율`:`총자본회전율` +  `고정재무비보상배율`:I(`자기자본순이익율`/`자기자본회전율`) + `고정재무비보상배율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `순운전자본/총자산비율`:I((1/`부채총계/자산총계비율`)-1) + `순운전자본/총자산비율`:`총자본회전율` + `순운전자본/총자산비율`:I(`자기자본순이익율`/`자기자본회전율`) + `순운전자본/총자산비율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율)+ I((1/`부채총계/자산총계비율`)-1):`총자본회전율` + I((1/`부채총계/자산총계비율`)-1):I(`자기자본순이익율`/`자기자본회전율`) + I((1/`부채총계/자산총계비율`)-1):I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `총자본회전율`:I(`자기자본순이익율`/`자기자본회전율`) + `총자본회전율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + I(`자기자본순이익율`/`자기자본회전율`):I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), family = binomial(link = "probit"), data = halfnorm.train)
+
+prob_bothh <- step(glm_probith, scope = formula(glm_probit2h), trace=F)
+
+glm_logit2h <- glm(부도여부 ~ `유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `유보액/총자산비율`:`고정재무비보상배율` + `유보액/총자산비율`:`순운전자본/총자산비율` + `유보액/총자산비율`:I((1/`부채총계/자산총계비율`)-1) +  `유보액/총자산비율`:`총자본회전율` + `유보액/총자산비율`:I(`자기자본순이익율`/`자기자본회전율`) + `유보액/총자산비율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `고정재무비보상배율`:`순운전자본/총자산비율` + `고정재무비보상배율`:I((1/`부채총계/자산총계비율`)-1) + `고정재무비보상배율`:`총자본회전율` +  `고정재무비보상배율`:I(`자기자본순이익율`/`자기자본회전율`) + `고정재무비보상배율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `순운전자본/총자산비율`:I((1/`부채총계/자산총계비율`)-1) + `순운전자본/총자산비율`:`총자본회전율` + `순운전자본/총자산비율`:I(`자기자본순이익율`/`자기자본회전율`) + `순운전자본/총자산비율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율)+ I((1/`부채총계/자산총계비율`)-1):`총자본회전율` + I((1/`부채총계/자산총계비율`)-1):I(`자기자본순이익율`/`자기자본회전율`) + I((1/`부채총계/자산총계비율`)-1):I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `총자본회전율`:I(`자기자본순이익율`/`자기자본회전율`) + `총자본회전율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + I(`자기자본순이익율`/`자기자본회전율`):I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), family = binomial(link = "logit"), data = halfnorm.train)
+
+log_bothh <- step(glm_logith, scope = formula(glm_logit2h), trace=F)
+
+glm_gompit2h <- glm(부도여부 ~ `유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `유보액/총자산비율`:`고정재무비보상배율` + `유보액/총자산비율`:`순운전자본/총자산비율` + `유보액/총자산비율`:I((1/`부채총계/자산총계비율`)-1) +  `유보액/총자산비율`:`총자본회전율` + `유보액/총자산비율`:I(`자기자본순이익율`/`자기자본회전율`) + `유보액/총자산비율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `고정재무비보상배율`:`순운전자본/총자산비율` + `고정재무비보상배율`:I((1/`부채총계/자산총계비율`)-1) + `고정재무비보상배율`:`총자본회전율` +  `고정재무비보상배율`:I(`자기자본순이익율`/`자기자본회전율`) + `고정재무비보상배율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `순운전자본/총자산비율`:I((1/`부채총계/자산총계비율`)-1) + `순운전자본/총자산비율`:`총자본회전율` + `순운전자본/총자산비율`:I(`자기자본순이익율`/`자기자본회전율`) + `순운전자본/총자산비율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율)+ I((1/`부채총계/자산총계비율`)-1):`총자본회전율` + I((1/`부채총계/자산총계비율`)-1):I(`자기자본순이익율`/`자기자본회전율`) + I((1/`부채총계/자산총계비율`)-1):I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + `총자본회전율`:I(`자기자본순이익율`/`자기자본회전율`) + `총자본회전율`:I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율) + I(`자기자본순이익율`/`자기자본회전율`):I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), family = binomial(link = "cloglog"), data = halfnorm.train)
+
+gomp_bothh <- step(glm_gompith, scope = formula(glm_gompit2h), trace=F)
+
+
+rbind(c(extractAIC(glm_probith), extractAIC(glm_probit_steph), extractAIC(glm_probit2h), extractAIC(prob_bothh)),c(extractAIC(glm_logith), extractAIC(glm_logit_steph), extractAIC(glm_logit2h), extractAIC(log_bothh)), c(extractAIC(glm_gompith), extractAIC(glm_gompit_steph), extractAIC(glm_gompit2h), extractAIC(gomp_bothh)))
+
+
+pred_prob_0220<-predict(prob_bothh, full4.train, type = "response")
+quantile(pred_prob_0220, 0.1, na.rm=TRUE)
+pred_class_0220<-ifelse(pred_prob_0220 < 0.00384,1,0)
+table(full4.train$부도여부, pred_class_0220)
+```
+
+```{r eval=FALSE, include=FALSE}
+#범위가 양수인 변수
+
+#금융비용.총비용비율
+g1 <- train6 %>% ggplot() + geom_boxplot(aes(y=금융비용.총비용비율, x = 부도여부)) + coord_flip() + theme_minimal()
+g2 <- train6 %>% ggplot() + geom_boxplot(aes(y=log1p(금융비용.총비용비율), x = 부도여부)) + coord_flip() + theme_minimal() #로그변환 선택
+g3 <- train6 %>% ggplot() + geom_boxplot(aes(y=sqrt(금융비용.총비용비율), x = 부도여부)) + coord_flip() + theme_minimal()
+g4 <- train6 %>% ggplot() + geom_boxplot(aes(y=1/(금융비용.총비용비율), x = 부도여부)) + coord_flip() + theme_minimal()
+g5 <- train6 %>% ggplot() + geom_boxplot(aes(y=(금융비용.총비용비율)^2, x = 부도여부)) + coord_flip() + theme_minimal()
+g6 <- train6 %>% ggplot() + geom_boxplot(aes(y=1/(금융비용.총비용비율)^2, x = 부도여부)) + coord_flip() + theme_minimal()
+grid.arrange(g1,g2,g3,g4,g5,g6)
+
+#고정부채비율
+g1 <- train6 %>% ggplot() + geom_boxplot(aes(y=고정부채비율, x = 부도여부)) + coord_flip() + theme_minimal()
+g2 <- train6 %>% ggplot() + geom_boxplot(aes(y=log1p(고정부채비율), x = 부도여부)) + coord_flip() + theme_minimal() #로그변환 선택
+g3 <- train6 %>% ggplot() + geom_boxplot(aes(y=sqrt(고정부채비율), x = 부도여부)) + coord_flip() + theme_minimal()
+g4 <- train6 %>% ggplot() + geom_boxplot(aes(y=1/(고정부채비율), x = 부도여부)) + coord_flip() + theme_minimal()
+g5 <- train6 %>% ggplot() + geom_boxplot(aes(y=(고정부채비율)^2, x = 부도여부)) + coord_flip() + theme_minimal()
+g6 <- train6 %>% ggplot() + geom_boxplot(aes(y=1/(고정부채비율)^2, x = 부도여부)) + coord_flip() + theme_minimal()
+grid.arrange(g1,g2,g3,g4,g5,g6)
+
+#유동부채비율
+g1 <- train6 %>% ggplot() + geom_boxplot(aes(y=유동부채비율, x = 부도여부)) + coord_flip() + theme_minimal()
+g2 <- train6 %>% ggplot() + geom_boxplot(aes(y=log1p(유동부채비율), x = 부도여부)) + coord_flip() + theme_minimal() #로그변환 선택
+g3 <- train6 %>% ggplot() + geom_boxplot(aes(y=sqrt(유동부채비율), x = 부도여부)) + coord_flip() + theme_minimal()
+g4 <- train6 %>% ggplot() + geom_boxplot(aes(y=1/(유동부채비율), x = 부도여부)) + coord_flip() + theme_minimal()
+g5 <- train6 %>% ggplot() + geom_boxplot(aes(y=(유동부채비율)^2, x = 부도여부)) + coord_flip() + theme_minimal()
+g6 <- train6 %>% ggplot() + geom_boxplot(aes(y=1/(유동부채비율)^2, x = 부도여부)) + coord_flip() + theme_minimal()
+grid.arrange(g1,g2,g3,g4,g5,g6)
+
+#유동비율
+g1 <- train6 %>% ggplot() + geom_boxplot(aes(y=유동비율, x = 부도여부)) + coord_flip() + theme_minimal()
+g2 <- train6 %>% ggplot() + geom_boxplot(aes(y=log1p(유동비율), x = 부도여부)) + coord_flip() + theme_minimal() #로그변환 선택
+g3 <- train6 %>% ggplot() + geom_boxplot(aes(y=sqrt(유동비율), x = 부도여부)) + coord_flip() + theme_minimal()
+g4 <- train6 %>% ggplot() + geom_boxplot(aes(y=1/(유동비율), x = 부도여부)) + coord_flip() + theme_minimal()
+g5 <- train6 %>% ggplot() + geom_boxplot(aes(y=(유동비율)^2, x = 부도여부)) + coord_flip() + theme_minimal()
+g6 <- train6 %>% ggplot() + geom_boxplot(aes(y=1/(유동비율)^2, x = 부도여부)) + coord_flip() + theme_minimal()
+grid.arrange(g1,g2,g3,g4,g5,g6)
+
+
+#고정자산.차입금비율
+train6 %>% ggplot() + geom_boxplot(aes(y=log1p(고정자산.차입금비율), x = 부도여부)) + coord_flip() + theme_minimal()
+
+#유동부채구성비율
+train6 %>% ggplot() + geom_boxplot(aes(y=sqrt(유동부채구성비율), x = 부도여부)) + coord_flip() + theme_minimal()
+
+#현금비율
+train6 %>% ggplot() + geom_boxplot(aes(y=log1p(현금비율), x = 부도여부)) + coord_flip() + theme_minimal()
+
+#금융비용.총부채비율
+train6 %>% ggplot() + geom_boxplot(aes(y=sqrt(금융비용.총부채비율), x = 부도여부)) + coord_flip() + theme_minimal()
+
+#고정자산회전율
+train6 %>% ggplot() + geom_boxplot(aes(y=log1p(고정자산회전율), x = 부도여부)) + coord_flip() + theme_minimal()
+
+#매입채무회전율
+train6 %>% ggplot() + geom_boxplot(aes(y=log1p(매입채무회전율), x = 부도여부)) + coord_flip() + theme_minimal()
+
+#매출채권회전율
+train6 %>% ggplot() + geom_boxplot(aes(y=log1p(매출채권회전율), x = 부도여부)) + coord_flip() + theme_minimal()
+
+#자기자본회전율
+train6 %>% ggplot() + geom_boxplot(aes(y=log1p(자기자본회전율), x = 부도여부)) + coord_flip() + theme_minimal()
+
+#자본금회전율
+train6 %>% ggplot() + geom_boxplot(aes(y=log1p(자본금회전율), x = 부도여부)) + coord_flip() + theme_minimal()
+
+#재고자산회전율
+train6 %>% ggplot() + geom_boxplot(aes(y=log1p(재고자산회전율), x = 부도여부)) + coord_flip() + theme_minimal()
+
+#총자본회전율
+train6 %>% ggplot() + geom_boxplot(aes(y=log1p(총자본회전율), x = 부도여부)) + coord_flip() + theme_minimal()
+
+#로그매출액
+train6 %>% ggplot() + geom_boxplot(aes(y=로그매출액, x = 부도여부)) + coord_flip() + theme_minimal()
+
+#로그자산
+train6 %>% ggplot() + geom_boxplot(aes(y=로그자산, x = 부도여부)) + coord_flip() + theme_minimal()
+
+
+
+car::bcnPower(train6$순부채.총자산비율, lambda=0.5, gamma = 5) %>% sort() %>% plot() #애매
+car::bcnPower(train6$유보액.총자산비율, lambda=0.2, gamma = 5) %>% sort() %>% plot()
+car::bcnPower(train6$고정재무비보상배율, lambda=0.2, gamma = 5) %>% sort() %>% plot() #애매
+car::bcnPower(train6$총CF.차입금비율, lambda=0.1, gamma = 5) %>% sort() %>% plot()
+car::bcnPower(train6$CF.차입금비율, lambda=0, gamma = 5) %>% sort() %>% plot()
+car::bcnPower(train6$순운전자본.총자산비율, lambda=0.3, gamma = 5) %>% sort() %>% plot()
+car::bcnPower(train6$총자산투자효율, lambda=0.2, gamma = 5) %>% sort() %>% plot()
+car::bcnPower(train6$매출채권증가율, lambda=-0.2, gamma = 5) %>% sort() %>% plot()
+car::bcnPower(train6$재고자산증가율, lambda=-0.2, gamma = 5) %>% sort() %>% plot()
+car::bcnPower(train6$자기자본순이익율, lambda=0.15, gamma = 5) %>% sort() %>% plot()
+car::bcnPower(train6$자본금순이익율, lambda=0.1, gamma = 5) %>% sort() %>% plot()
+```
+
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+glm_probit1 <- glm(부도여부 ~ log1p(금융비용.총비용비율) + log1p(고정부채비율) + log1p(유동부채비율) + log1p(유동비율) + log1p(고정자산.차입금비율) + sqrt(유동부채구성비율) + log1p(현금비율) + sqrt(금융비용.총부채비율) + log1p(고정자산회전율) + log1p(매입채무회전율) + log1p(매출채권회전율) + log1p(자기자본회전율) + log1p(자본금회전율) + log1p(재고자산회전율) + log1p(총자본회전율) + 로그매출액 + 로그자산 + 순부채.총자산비율 + 유보액.총자산비율 + 고정재무비보상배율 + 총CF.차입금비율 + CF.차입금비율 + 순운전자본.총자산비율 + 총자산투자효율 + 매출채권증가율 + 재고자산증가율 + 자기자본순이익율 + 자본금순이익율 + 업종 + 규모, family = binomial(link = "probit"), data = train6)
+glm_probit_step1 <- step(glm_probit1, trace=0)
+
+glm_logit1 <- glm(부도여부 ~ log1p(금융비용.총비용비율) + log1p(고정부채비율) + log1p(유동부채비율) + log1p(유동비율) + log1p(고정자산.차입금비율) + sqrt(유동부채구성비율) + log1p(현금비율) + sqrt(금융비용.총부채비율) + log1p(고정자산회전율) + log1p(매입채무회전율) + log1p(매출채권회전율) + log1p(자기자본회전율) + log1p(자본금회전율) + log1p(재고자산회전율) + log1p(총자본회전율) + 로그매출액 + 로그자산 + 순부채.총자산비율 + 유보액.총자산비율 + 고정재무비보상배율 + 총CF.차입금비율 + CF.차입금비율 + 순운전자본.총자산비율 + 총자산투자효율 + 매출채권증가율 + 재고자산증가율 + 자기자본순이익율 + 자본금순이익율 + 업종 + 규모, family = binomial(link = "logit"), data = train6)
+glm_logit_step1 <- step(glm_logit1, trace=0)
+
+glm_gompit1 <- glm(부도여부 ~ log1p(금융비용.총비용비율) + log1p(고정부채비율) + log1p(유동부채비율) + log1p(유동비율) + log1p(고정자산.차입금비율) + sqrt(유동부채구성비율) + log1p(현금비율) + sqrt(금융비용.총부채비율) + log1p(고정자산회전율) + log1p(매입채무회전율) + log1p(매출채권회전율) + log1p(자기자본회전율) + log1p(자본금회전율) + log1p(재고자산회전율) + log1p(총자본회전율) + 로그매출액 + 로그자산 + 순부채.총자산비율 + 유보액.총자산비율 + 고정재무비보상배율 + 총CF.차입금비율 + CF.차입금비율 + 순운전자본.총자산비율 + 총자산투자효율 + 매출채권증가율 + 재고자산증가율 + 자기자본순이익율 + 자본금순이익율 + 업종 + 규모, family = binomial(link = "cloglog"), data = train6)
+glm_gompit_step1 <- step(glm_gompit1, trace=0)
+
+extractAIC(glm_probit_step1); extractAIC(glm_logit_step1); extractAIC(glm_gompit_step1)
+
+pred_prob_0220<-predict(glm_logit_step1, train6, type = "response")
+pred_class_0220<-ifelse(pred_prob_0220 < 0.0025,1,0)
+table(train6$부도여부, pred_class_0220)
+
+
+
+
+glm_probit2 <- glm(부도여부 ~ log1p(금융비용.총비용비율) + log1p(고정부채비율) + log1p(유동부채비율) + log1p(유동비율) + log1p(고정자산.차입금비율) + sqrt(유동부채구성비율) + log1p(현금비율) + sqrt(금융비용.총부채비율) + log1p(고정자산회전율) + log1p(매입채무회전율) + log1p(매출채권회전율) + log1p(자기자본회전율) + log1p(자본금회전율) + log1p(재고자산회전율) + log1p(총자본회전율) + 로그매출액 + 로그자산 + I(순부채.총자산비율^0.5) + I(유보액.총자산비율^0.2) + I(고정재무비보상배율^0.2) + I(총CF.차입금비율^0.1) + I(CF.차입금비율^0.01) + I(순운전자본.총자산비율^0.3) + I(총자산투자효율^0.2) + I(매출채권증가율^(-0.2)) + I(재고자산증가율^(-0.2)) + I(자기자본순이익율^0.15) + I(자본금순이익율^0.1), family = binomial(link = "probit"), data = train6)
+glm_probit_step2 <- step(glm_probit2, trace=0)
+
+glm_logit2 <- glm(부도여부 ~ log1p(금융비용.총비용비율) + log1p(고정부채비율) + log1p(유동부채비율) + log1p(유동비율) + log1p(고정자산.차입금비율) + sqrt(유동부채구성비율) + log1p(현금비율) + sqrt(금융비용.총부채비율) + log1p(고정자산회전율) + log1p(매입채무회전율) + log1p(매출채권회전율) + log1p(자기자본회전율) + log1p(자본금회전율) + log1p(재고자산회전율) + log1p(총자본회전율) + 로그매출액 + 로그자산 + I(순부채.총자산비율^0.5) + I(유보액.총자산비율^0.2) + I(고정재무비보상배율^0.2) + I(총CF.차입금비율^0.1) + I(CF.차입금비율^0.01) + I(순운전자본.총자산비율^0.3) + I(총자산투자효율^0.2) + I(매출채권증가율^(-0.2)) + I(재고자산증가율^(-0.2)) + I(자기자본순이익율^0.15) + I(자본금순이익율^0.1), family = binomial(link = "logit"), data = train6)
+glm_logit_step2 <- step(glm_logit2, trace=0)
+
+glm_gompit2 <- glm(부도여부 ~ log1p(금융비용.총비용비율) + log1p(고정부채비율) + log1p(유동부채비율) + log1p(유동비율) + log1p(고정자산.차입금비율) + sqrt(유동부채구성비율) + log1p(현금비율) + sqrt(금융비용.총부채비율) + log1p(고정자산회전율) + log1p(매입채무회전율) + log1p(매출채권회전율) + log1p(자기자본회전율) + log1p(자본금회전율) + log1p(재고자산회전율) + log1p(총자본회전율) + 로그매출액 + 로그자산 + I(순부채.총자산비율^0.5) + I(유보액.총자산비율^0.2) + I(고정재무비보상배율^0.2) + I(총CF.차입금비율^0.1) + I(CF.차입금비율^0.01) + I(순운전자본.총자산비율^0.3) + I(총자산투자효율^0.2) + I(매출채권증가율^(-0.2)) + I(재고자산증가율^(-0.2)) + I(자기자본순이익율^0.15) + I(자본금순이익율^0.1), family = binomial(link = "cloglog"), data = train6)
+glm_gompit_step2 <- step(glm_gompit2, trace=0)
+```
+
+
+## Part 2
+```{r message=FALSE, warning=FALSE}
+part2.train <- full4.trainz
+
+part2.train[, 1:42] <- sapply(part2.train[, 1:42], function(x) (x - median(x)) / IQR(x)) #robust scaler 사용
+
+# set.seed(1886)
+# sample(2928,102) -> aa
+# part2.train0 <- part2.train[part2.train$부도여부 == 0, ]
+# part2.train0 <- part2.train0[aa,]
+# part2.traindum <- rbind(part2.train0, part2.train[part2.train$부도여부 == 1,]) %>% arrange(ID)
+
+sur.cox <- coxph(Surv(`calender times`, as.numeric(부도여부)-1) ~ `유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), data = part2.train)
+sur.cox
+
+# ggsurvplot(survfit(sur.cox), data=part2.train, conf.int = FALSE)
+extractAIC(sur.cox)
+
+cox.model<-stepAIC(sur.cox,direction = "both", trace = 0)
+summary(cox.model)
+
+extractAIC(cox.model) #AIC=1597.804 with 4 parameters
+
+# ggforest(cox.model, data = train)
+# ggsurvplot(survfit(cox.model), data=part2.train, conf.int = FALSE)
+
+
+#scaling 하지 않은 데이터(full4.trainz)에 변수변환 및 변수선택해서 넣은 모델
+sur.cox <- coxph(Surv(`calender times`, as.numeric(부도여부)-1) ~ log1p(`금융비용/총비용비율`) + log1p(고정부채비율) + log1p(유동부채비율) + log1p(유동비율) + log1p(`고정자산/차입금비율`) + sqrt(유동부채구성비율) + log1p(현금비율) + sqrt(`금융비용/총부채비율`) + log1p(고정자산회전율) + log1p(매입채무회전율) + log1p(매출채권회전율) + log1p(자기자본회전율) + log1p(자본금회전율) + log1p(재고자산회전율) + log1p(총자본회전율) + 로그매출액 + 로그자산 + `순부채/총자산비율` + `유보액/총자산비율` + 고정재무비보상배율 + `총CF/차입금비율` + `CF/차입금비율` + `순운전자본/총자산비율` + 총자산투자효율 + 매출채권증가율 + 재고자산증가율 + 자기자본순이익율 + 자본금순이익율 + 업종 + 규모, data = full4.trainz)
+sur.cox
+extractAIC(sur.cox)
+
+cox.model<-stepAIC(sur.cox,direction = "both", trace = 0)
+summary(cox.model)
+extractAIC(cox.model) #AIC: 1558.674 with 17 parameters
+
+#robust scaler로 scalng한 데이터(part2.train)에 변수변환하지 않고 변수선택만 해서 넣은 모델
+sur.cox <- coxph(Surv(`calender times`, as.numeric(부도여부)-1) ~ `금융비용/총비용비율` + 고정부채비율 + 유동부채비율 + 유동비율 + `고정자산/차입금비율` + 유동부채구성비율 + 현금비율 + `금융비용/총부채비율` + 고정자산회전율 + 매입채무회전율 + 매출채권회전율 + 자기자본회전율 + 자본금회전율 + 재고자산회전율 + 총자본회전율 + 로그매출액 + 로그자산 + `순부채/총자산비율` + `유보액/총자산비율` + 고정재무비보상배율 + `총CF/차입금비율` + `CF/차입금비율` + `순운전자본/총자산비율` + 총자산투자효율 + 매출채권증가율 + 재고자산증가율 + 자기자본순이익율 + 자본금순이익율 + 업종 + 규모, data = part2.train)
+sur.cox
+extractAIC(sur.cox)
+
+cox.model<-stepAIC(sur.cox,direction = "both", trace = 0)
+summary(cox.model)
+extractAIC(cox.model) #AIC=1568.155 with 14 parameters
+
+#robust scaler로 scalng한 데이터(part2.train)에 전체 변수를 넣은 모델
+sur.cox <- coxph(Surv(`calender times`, as.numeric(부도여부)-1) ~ ., data = part2.train[,-43])
+sur.cox
+extractAIC(sur.cox)
+
+cox.model<-stepAIC(sur.cox,direction = "both", trace = 0)
+summary(cox.model)
+extractAIC(cox.model) #AIC=1546.682 with 22 parameters
+
+#scaling 하지 않은 데이터(full4.trainz)에 전체 변수를 넣은 모델
+sur.cox <- coxph(Surv(`calender times`, as.numeric(부도여부)-1) ~ ., data = full4.trainz[,-43])
+sur.cox
+extractAIC(sur.cox)
+
+cox.model<-step(sur.cox,direction = "both", trace = 0)
+summary(cox.model)
+extractAIC(cox.model) #AIC=1546.682 with 22 parameters
+
+sur.cox2 <- coxph(Surv(`calender times`, as.numeric(부도여부)-1) ~ .*., data = full4.trainz[,-43])
+sur.cox.step <- step(sur.cox, scope = formula(sur.cox2), trace=F)
+extractAIC(sur.cox.step)
+
+#scaling 하지 않은 데이터(full4.trainz)에 전체 변수 및 새로 만든 변수를 넣은 모델
+sur.cox <- coxph(Surv(`calender times`, as.numeric(부도여부)-1) ~ .-`부채총계/자산총계비율` - 자기자본순이익율 - 자기자본회전율 - `금융비용/총비용비율` -부채비율 +I((1/`부채총계/자산총계비율`)-1) + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), data = full4.trainz[,-43])
+sur.cox
+extractAIC(sur.cox)
+
+cox.model<-stepAIC(sur.cox,direction = "both", trace = 0)
+summary(cox.model)
+extractAIC(cox.model) #AIC=1547.358 with 18 parameters
+```
+
+```{r}
+# cox.model1 <- coxph(Surv(`calender times`, 부도여부) ~ `유보액/총자산비율` + 고정재무비보상배율 + `순운전자본/총자산비율` + 총자본회전율, data = full4.trainz)
+# cox.model2 <- coxph(Surv(`calender times`, 부도여부) ~ log1p(유동부채비율) + log1p(유동비율) + log1p(현금비율) + sqrt(`금융비용/총부채비율`) + log1p(매출채권회전율) + log1p(총자본회전율) + 로그매출액 + 로그자산 + `순부채/총자산비율` + `유보액/총자산비율` + `순운전자본/총자산비율` + 매출채권증가율 + 자본금순이익율 + 규모, data = full4.trainz)
+# cox.model3 <- coxph(Surv(`calender times`, 부도여부) ~ 현금비율 + `금융비용/총부채비율` + 고정자산회전율 + 매출채권회전율 + 총자본회전율 + 로그자산 + `순부채/총자산비율` + `유보액/총자산비율` + `순운전자본/총자산비율` + 매출채권증가율 + 규모, data = part2.train)
+cox.model4 <- coxph(Surv(`calender times`, as.numeric(부도여부)-1) ~ `금융비용/총비용비율` + 고정부채비율 + 고정비율 + 부채비율 + `순부채/총자산비율` + `차입금/자기자본비율` + `순운전자본/총자산비율` + 매출채권증가율 + `금융비용/총부채비율` + 자기자본순이익율 + 총자본경상이익율 + 경영자본회전율 + 고정자산회전율 + 매출채권회전율 + 총자본회전율 + 나이 + 로그매출액 + 로그자산 + 규모, data = full4.trainz)
+# cox.model5 <- coxph(Surv(`calender times`, 부도여부) ~ 고정부채비율 + 고정비율 + `순부채/총자산비율` + `차입금/자기자본비율` + `순운전자본/총자산비율` + 매출채권증가율 + `금융비용/총부채비율` + 총자본경상이익율 + 경영자본회전율 + 고정자산회전율 + 매출채권회전율 + 총자본회전율 + 나이 + 로그자산 + 규모, data = full4.trainz)
+
+
+S <- basehaz(cox.model4)
+lm <- lm(log(hazard)~time, data = S)
+alpha <- summary(lm)$coefficients[1]
+beta <- summary(lm)$coefficients[2]
+
+delta.t <- 365
+Ht <- exp(alpha+beta*0)
+Ht.delta <- exp(alpha+beta*(0+delta.t))
+St<- exp(-Ht)
+St.delta<-exp(-Ht.delta)
+
+mu.cox <- predict(cox.model4, full4.trainz, type = 'risk')
+p.cox <- 1-(St.delta/St)^mu.cox
+
+#p.cox2 <-1-predict(cox.model2, train.c, type = 'survival')
+
+hist(p.cox)
+table(p.cox>0.5)
+confusionMatrix( factor(as.numeric(p.cox>0.5)), factor(full4.trainz$부도여부))
+
+
+# S <- basehaz(cox.model5)
+# lm <- lm(log(hazard)~time, data = S)
+# alpha <- summary(lm)$coefficients[1]
+# beta <- summary(lm)$coefficients[2]
+# 
+# delta.t <- 365
+# Ht <- exp(alpha+beta*0)
+# Ht.delta <- exp(alpha+beta*(0+delta.t))
+# St<- exp(-Ht)
+# St.delta<-exp(-Ht.delta)
+# 
+# mu.cox <- predict(cox.model5, full4.trainz, type = 'risk')
+# p.cox <- 1-(St.delta/St)^mu.cox
+# 
+# #p.cox2 <-1-predict(cox.model2, train.c, type = 'survival')
+# 
+# hist(p.cox)
+# table(p.cox>0.5)
+# confusionMatrix( factor(as.numeric(p.cox>0.5)), factor(full4.trainz$부도여부))
+```
+
+## Part 3
+```{r}
+# lift function 
+make.lift <- function(x){
+  
+  x <- x %>% arrange(desc(pred))
+  rownames(x) <- 1:nrow(x)
+  mat <- matrix(0, ncol=3, nrow=10)
+  mat[,1] <- sum(x$y==1)/nrow(x)
+
+  for (i in 1:10){
+    df <- x[((i-1)*317+1):(i*317),]
+    df <- na.omit(df)
+    mat[i,2] <- sum(df$y==1)/317
+    mat[i,3] <- mat[i,2]/mat[i,1]
+  }
+
+  colnames(mat) <- c('tot_lift', 'row_lift', 'lift')
+  return(mat)
+  
+}
+
+# 1) GLM 
+
+glm_pred <- predict(glm_probit_step, newdata = full4.trainz, type = 'response')
+glm_df <- data.frame(ID=full4.trainz$ID, y=as.numeric(full4.trainz$부도여부)-1, pred=glm_pred)
+glm_df <- glm_df %>% dplyr::bind_rows(data.frame(ID=c(169,574,747,1257,1327,2643,4698,2876,2892), y=rep(1,9), pred=rep(1,9)))
+confusionMatrix( factor(as.numeric(glm_df$pred>0.5)), factor(glm_df$y))
+
+# 2) GAM
+gam.data <- full4.trainz
+colnames(gam.data) <- c(paste0("x",1:42),"ID",paste0("x",43:44),"delta","x45")
+gam.test <- full4.test
+colnames(gam.test) <- c(paste0("x",1:42),"ID",paste0("x",43:44),"delta","x45")
+
+gam_probit <- mgcv::gam(delta ~ s(x3) + x4 + s(x8) + x9 + x13 + x19 + x22 + x23 + s(x26) + x27 + x28 + s(x30) + x37 + s(x38) + s(x40) + s(x41), data=gam.data, family=binomial(link="probit"), method="REML")
+
+gam_pred <- predict(gam_probit, newdata = gam.data, type = 'response')
+gam_df <- data.frame(ID=full4.trainz$ID, y=as.numeric(full4.trainz$부도여부)-1, pred=gam_pred)
+gam_df <- gam_df %>% dplyr::bind_rows(data.frame(ID=c(169,574,747,1257,1327,2643,4698,2876,2892), y=rep(1,9), pred=rep(1,9)))
+confusionMatrix( factor(as.numeric(gam_df$pred>0.5)), factor(gam_df$y))
+
+
+# 3) Cox
+
+cox_df <-data.frame(pred =p.cox, y = as.numeric(full4.trainz$부도여부)-1) 
+cox_df <- cox_df %>% bind_rows(data.frame(pred=rep(1,9), y=rep(1,9)))
+
+
+glm.lift <- make.lift(glm_df)
+gam.lift <- make.lift(gam_df)
+cox.lift <- make.lift(cox_df)
+
+## lift plot 
+color_list <- c("cornflowerblue", "orange", "red2", "forestgreen", "black")
+plot(glm.lift[,3], type = 'l', lwd = 2, col=color_list[1], main="lift curve", ylab ="", ylim = c(0,6));lines(gam.lift[,3], type="l", lwd = 2, col=color_list[3]);lines(cox.lift[,3], type = 'l', lwd = 2, col=color_list[2]);legend('topright', legend = c("GLM", "GAM", "COX"), col = color_list[c(1,3,2)], lwd = c(2,2,2), lty=c(1,1,1), inset=c(0.02,0.04))
+
+# ggplot()+geom_line(aes(x=seq(1:10), y=glm.lift[,3]),col=color_list[1], lwd=2) + geom_line(aes(x=seq(1:10), y=gam.lift[,3]), col=color_list[3], lwd=2) + geom_line(aes(x=seq(1:10), y=cox.lift[,3]),lwd=2, col=color_list[2])+theme(legend.justification = "top") + ggtitle("lift curve") +
+# labs(x = "", y = "")+theme_minimal()
+```
+## b) 
+
+상위 10% (317개) 에 해당하는 기업들의 지시변수 (indicator variables )를 각각 구하시오. 또 각 경우 학습자료를 이용하여 이들 317개 지시변수 중 실제부도기업의 백분율값 (100%*(실제부도기업수/317) ) 을 구하고 각 방법의 장단점을 서로 비교 검토 하시오
+
+```{r warning = FALSE, message = FALSE}
+
+data.frame(glm = glm.lift[1,2]*100, gam = gam.lift[1,2]*100, cox = cox.lift[1,2]*100) %>% round(3)
+
+```
+
+## d) 
+
+검정용 자료 (test data ; 3129-6336)에 대하여 GLM/GAM 부도확률 및 Cox PHM 부도점수의 추정값과 이들 값이 상위 10%에 해당하는 기업들의 지시변수(indicator variables)를 각각 구하여 excel file로 제출하시오.
+
+(예측된 부도 확률/점수 값이 상위 10% 에 속하는 317개 기업 중 실제 부도기업의 백분율 (Lift)을 검정자료에서 구하여 각조의 예측 능력을 객관적으로 비교 평가함)
+
+```{r warning = FALSE, message = FALSE}
+submission <- full4.test["ID"]
+
+### 1) GLM 해지 확률
+glm_yhat <- predict(glm_probit_step, newdata = full4.test, type = 'response')
+submission["glm"] <- ifelse(glm_yhat>=sort(glm_yhat, decreasing = T)[304], 1, 0)
+
+### 2) GAM 해지 확률
+gam_yhat <- predict(gam_probit, newdata = gam.test, type = 'response')
+submission["gam"] <- ifelse(gam_yhat>=sort(gam_yhat, decreasing = T)[304], 1, 0)
+
+### 3) COX 해지 확률
+test.score <- predict(cox.model4, full4.test, type = 'risk')
+submission["cox"] <- ifelse(test.score>=sort(test.score, decreasing = T)[304], 1, 0)
+head(submission)
+
+write.csv(submission, "glm.gam.cox_ind.csv", row.names = FALSE)
+```
+
+## LDA
+```{r}
+#1. GLM 모델에서 선택한 변수로 LDA
+# ld <- lda(as.numeric(부도여부)-1~`유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), data=full4.trainz, cv=TRUE)
+# ld_hat <- predict(ld, full4.trainz)
+# ldahist(ld_hat$x, g=full4.trainz$부도여부)
+# 
+# # train predict
+# lda_df <- data.frame(ID=full4.trainz$ID, y=as.numeric(full4.trainz$부도여부)-1, pred=ld_hat$posterior[,2]) %>% bind_rows(data.frame(ID=c(169,574,747,1257,1327,2643,4698,2876,2892), pred=rep(1,9), y=rep(1,9)))
+# 
+# # test
+# ld_test <- predict(ld, full4.test)$posterior[,2]
+# submission["lda"] <- ifelse(ld_test>=sort(ld_test, decreasing = T)[304], 1, 0)
+# table(as.numeric(full4.trainz$부도여부)-1, predict(ld, full4.trainz)$class)
+
+
+#2. Cox PHM 모델에서 선택한 변수로 LDA [제일 나음]
+ld2 <- lda(as.numeric(부도여부)-1~`금융비용/총비용비율` + 고정부채비율 + 고정비율 + 부채비율 + `순부채/총자산비율` + `차입금/자기자본비율` + `순운전자본/총자산비율` + 매출채권증가율 + `금융비용/총부채비율` + 자기자본순이익율 + 총자본경상이익율 + 경영자본회전율 + 고정자산회전율 + 매출채권회전율 + 총자본회전율 + 나이 + 로그매출액 + 로그자산, data=full4.trainz, cv=TRUE)
+ld_hat2 <- predict(ld2, full4.trainz)
+# ldahist(ld_hat2$x, g=full4.trainz$부도여부)
+
+# train predict
+lda_df2 <- data.frame(ID=full4.trainz$ID, y=as.numeric(full4.trainz$부도여부)-1, pred=ld_hat2$posterior[,2]) %>% bind_rows(data.frame(ID=c(169,574,747,1257,1327,2643,4698,2876,2892), pred=rep(1,9), y=rep(1,9)))
+
+# test
+ld_test2 <- predict(ld2, full4.test)$posterior[,2]
+submission["lda"] <- ifelse(ld_test2>=sort(ld_test2, decreasing = T)[304], 1, 0)
+table(as.numeric(full4.trainz$부도여부)-1, predict(ld2, full4.trainz)$class)
+
+
+#3. correlation 높은 변수 제거한 변수들로 LDA
+# ld3 <- lda(as.numeric(부도여부)-1 ~ `금융비용/총비용비율` + 고정부채비율 + 유동부채비율 + 유동비율 + `고정자산/차입금비율` + 유동부채구성비율 + 현금비율 + `금융비용/총부채비율` + 고정자산회전율 + 매입채무회전율 + 매출채권회전율 + 자기자본회전율 + 자본금회전율 + 재고자산회전율 + 총자본회전율 + 로그매출액 + 로그자산 + `순부채/총자산비율` + `유보액/총자산비율` + 고정재무비보상배율 + `총CF/차입금비율` + `CF/차입금비율` + `순운전자본/총자산비율` + 총자산투자효율 + 매출채권증가율 + 재고자산증가율 + 자기자본순이익율 + 자본금순이익율, data=full4.trainz, cv=TRUE)
+# ld_hat3 <- predict(ld3, full4.trainz)
+# ldahist(ld_hat3$x, g=full4.trainz$부도여부)
+# 
+# # train predict
+# lda_df3 <- data.frame(ID=full4.trainz$ID, y=as.numeric(full4.trainz$부도여부)-1, pred=ld_hat3$posterior[,2]) %>% bind_rows(data.frame(ID=c(169,574,747,1257,1327,2643,4698,2876,2892), pred=rep(1,9), y=rep(1,9)))
+# 
+# # test
+# ld_test3 <- predict(ld3, full4.test)$posterior[,2]
+# submission["lda"] <- ifelse(ld_test3>=sort(ld_test3, decreasing = T)[304], 1, 0)
+# table(as.numeric(full4.trainz$부도여부)-1, predict(ld3, full4.trainz)$class)
+```
+
+## KNN
+```{r}
+# train data -> min-max scaling
+train_min <- apply(full4.trainz[,1:42], 2, min)
+train_max <- apply(full4.trainz[,1:42], 2, max)
+train_mm <- full4.trainz
+for(i in 1:42){
+  train_mm[,i] <- (train_mm[,i]-train_min[i])/(train_max[i]-train_min[i])
+}
+# encoding
+train_mm$ID <- full4.trainz$ID
+업종_level <- as.character(1:5); names(업종_level) <- levels(train_mm$업종)
+train_mm["업종"] <- as.factor(sapply(train_mm$업종, function(x) 업종_level[[x]]))
+규모_level <- as.character(1:5); names(규모_level) <- levels(train_mm$규모)
+train_mm["규모"] <- as.factor(sapply(train_mm$규모, function(x) 규모_level[[x]]))
+train_mm$부도여부 <- ifelse(train_mm$부도여부==1, "yes", "no")
+train_mm$`calender times` <- full4.trainz$`calender times`
+
+control <- trainControl(method="repeatedcv", number=10, repeats = 30, classProbs = TRUE)
+
+kn <- train(부도여부 ~., data=train_mm[,-43], method="knn", trControl=control)
+# best_k <- kn$bestTune; best_k
+
+# train predict
+set.seed(1886)
+kn_fit <- knn(train=train_mm[,-c(43,46)], cl=train_mm$부도여부, test=train_mm[,-c(43,46)], k=169, prob=TRUE)
+knn_df <- data.frame(ID=full4.trainz$ID, y=as.numeric(full4.trainz$부도여부)-1, pred=1-attr(kn_fit,"prob")) %>% bind_rows(data.frame(ID=c(169,574,747,1257,1327,2643,4698,2876,2892), pred=rep(1,9), y=rep(1,9)))
+
+
+# test
+# min-max scaling
+test_mm <- full4.test
+for(i in 1:42){
+  test_mm[,i] <- (test_mm[,i]-train_min[i])/(train_max[i]-train_min[i])
+}
+# encoding
+test_mm["업종"] <- sapply(test_mm$업종, function(x) 업종_level[[x]])
+test_mm["규모"] <- sapply(test_mm$규모, function(x) 규모_level[[x]])
+set.seed(1886)
+kn_fit <- knn(train=train_mm[,-c(43,46,47)], cl=train_mm$부도여부, test=test_mm[,-c(43,46,47)], k=169, prob=TRUE)
+knn_test <- 1-attr(kn_fit,"prob")
+# knn_test <- data.frame(knn_test, row.names=as.character(3160:6314))
+submission["knn"] <- ifelse(knn_test>=sort(knn_test, decreasing = T)[304], 1, 0)
+
+# knn_list <- knn_test %>% arrange(desc(knn_test))
+# knn_list <- rownames(knn_list)[1:304]
+# submission["knn"] <- 0; submission[knn_list,"knn"] <- 1
+
+# table(as.numeric(full4.trainz$부도여부)-1, predict(kn, full4.trainz)$class)
+# 
+# confusionMatrix( factor(as.numeric(p.cox>0.5)), factor(full4.trainz$부도여부))
+```
+
+```{r}
+set.seed(123)
+
+train2$delta <- ifelse(train2$delta==1, "yes", "no")
+control <- trainControl(method="repeatedcv", number=10, repeats = 30, classProbs = TRUE)
+
+kn <- train(delta ~ ., data=train2, method="knn", trControl=control)
+best_k <- kn$bestTune
+kn_fit <- knn(train=train2[,-1], cl=train2$delta, test=train2[,-1], k=best_k, prob=TRUE)
+
+knn_pred <- prediction(1-attr(kn_fit,"prob"), train$delta)
+
+```
+
+
+
+## SVM
+```{r}
+svm_fit <- svm(as.numeric(부도여부)-1 ~ ., data=full4.trainz[,-c(43,47)], gamma=c(0.001,0.01,0.1,1,10), cost=c(0.1,1,3,5,10), probability=TRUE)
+summary(svm_fit)
+
+# train predict
+svm_pred <- predict(svm_fit, full4.trainz, probability = TRUE)
+
+# test
+svm_test <- predict(svm_fit, full4.test[,-c(43,46,47)], probability = TRUE)
+submission["svm"] <- ifelse(as.numeric(svm_test)>=as.numeric(sort(svm_test, decreasing = T)[304]), 1, 0)
+```
+
+## Random Forest
+```{r}
+rf_model <- randomForest(delta ~ ., data=gam.data[,c(1:42,44,45,46)], mtry = floor(sqrt(45)), ntree = 500, importance = T)
+
+varImpPlot(rf_model,main = "rf : feature_importance")
+rf_pred <- predict(rf_model, gam.data[,c(1:42,44,45,46)], type = "prob")[,2]
+table(rf_pred>0.5, gam.data$delta)
+
+
+
+#train predict
+rf_pred_train<-predict(rf_model, gam.data[,c(1:42,44,45,46)])
+rf_pred_test<-predict(rf_model, gam.test[,c(1:42,44,45,46,47)])
+submission["rf"] <- ifelse(as.numeric(rf_pred_test)>=as.numeric(sort(rf_pred_test, decreasing = T)[304]), 1, 0)
+```
+```{r}
+rf_model <- randomForest(delta ~ x1 + x2 + x7 + x8 + x12 + x19 + x20 + x25 + x33 + x34 + x35 + x36 + x37 + x38 +x39 +x41 +x42 + x6 + x9 + x14 + x16 + x17 + x18 + x21 + x22 + x23+ x26 + x27, data=gam.data, mtry = floor(sqrt(45)), ntree = 500, importance = T)
+
+varImpPlot(rf_model,main = "rf : feature_importance")
+rf_pred <- predict(rf_model, gam.data[,c(1:42,44,45,46)], type = "prob")[,2]
+table(rf_pred>0.5, gam.data$delta)
+
+
+
+#train predict
+rf_pred_train<-predict(rf_model, gam.data[,c(1:42,44,45,46)])
+rf_pred_test<-predict(rf_model, gam.test[,c(1:42,44,45,46,47)])
+submission["rf"] <- ifelse(as.numeric(rf_pred_test)>=as.numeric(sort(rf_pred_test, decreasing = T)[304]), 1, 0)
+
+
+```
+
+```{r}
+rf_model <- randomForest(delta ~ ., data=gam.data[,c(1:42,44,45,46)], mtry = floor(sqrt(40)), ntree = 500, importance = T)
+
+varImpPlot(rf_model,main = "rf : feature_importance")
+rf_pred <- predict(rf_model, gam.data[,c(1:42,44,45,46)], type = "prob")[,2]
+table(rf_pred>0.5, gam.data$delta)
+
+
+
+#train predict
+rf_pred_train<-predict(rf_model, gam.data[,c(1:42,44,45,46)])
+rf_pred_test<-predict(rf_model, gam.test[,c(1:42,44,45,46,47)])
+submission["rf"] <- ifelse(as.numeric(rf_pred_test)-1>=as.numeric(sort(rf_pred_test, decreasing = T)[304])-1, 1, 0)
+```
+
+
+## NN
+```{r}
+set.seed(1886)
+nn_model <- nnet(부도여부 ~ `유보액/총자산비율` +`고정재무비보상배율` + `순운전자본/총자산비율` + I((1/`부채총계/자산총계비율`)-1) + `총자본회전율` + I(`자기자본순이익율`/`자기자본회전율`) + I((`금융비용/총비용비율` * 부채비율) / 자기자본회전율), data=full4.trainz, size = 5, decay = 5e-04, na.action = na.omit)
+
+garson(nn_model) + theme(axis.text.x=element_text(angle=45, hjust=1))
+
+# train predict
+nn_pred <- predict(nn_model, full4.trainz)[,1]
+nn_df <- data.frame(ID=full4.trainz$ID, y=as.numeric(full4.trainz$부도여부)-1, pred=nn_pred) %>% bind_rows(data.frame(ID=c(169,574,747,1257,1327,2643,4698,2876,2892), pred=rep(1,9), y=rep(1,9)))
+
+
+# test
+nn_test <- predict(nn_model, newdata=full4.test[,-43])[,1]
+submission["nn"] <- ifelse(nn_test>=sort(nn_test, decreasing = T)[304], 1, 0)
+
+nn_list <- sort(nn_test, decreasing = T)[1:304] %>% names()
+submission["nn"] <- 0; submission[nn_list,"nn"] <- 1
+```
+
+
+## XgBoost
+```{r}
+xgb_model <- xgboost(data=data.matrix(full4.trainz[,-c(43,46,47)]), label=full4.trainz$부도여부, nrounds = 10)
+
+xgb_pred <- predict(xgb_model, data.matrix(full4.trainz[,-c(43,46,47)]))
+table(xgb_pred>0.5, full4.trainz$부도여부)
+
+# xgb_df <- data.frame(ID=full4.trainz$ID, y=as.numeric(full4.trainz$부도여부)-1, pred=xgb_pred) %>% bind_rows(data.frame(ID=c(169,574,747,1257,1327,2643,4698,2876,2892), pred=rep(1,9), y=rep(1,9)))
+
+xgb_test <- predict(xgb_model, data.matrix(full4.test[,-c(43,46,47)]))
+
+submission["xgb"] <- ifelse(xgb_test>=sort(xgb_test, decreasing = T)[304], 1, 0)
+```
+
+
