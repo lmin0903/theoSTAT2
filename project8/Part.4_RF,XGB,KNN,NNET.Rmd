@@ -1,5 +1,5 @@
 ---
-title: "11월13일2-랜포"
+title: "Part.4 Random Forest, XGB, KNN, NNET"
 author: "238STG02 이민주"
 date: "2023-11-13"
 output: html_document
